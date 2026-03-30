@@ -1,0 +1,10 @@
+.env
+
+/frontend/
+*.html
+*.css
+*.js
+
+package.json
+package-lock.json
+
