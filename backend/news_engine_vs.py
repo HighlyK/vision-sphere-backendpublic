@@ -183,8 +183,8 @@ class VisionSphereV18_5:
         # ==========================================
         if "news.google.com" in target_url or "news.url.google.com" in target_url:
             try:
-                # Decode the RSS wrapper to reveal the actual publisher link
-                decoded = gnewsdecoder(target_url, interval=1)
+                # 🛑 THE FIX: Force the synchronous decoder into a background thread
+                decoded = await asyncio.to_thread(gnewsdecoder, target_url, interval=1)
                 if decoded and decoded.get("status"):
                     target_url = decoded.get("decoded_url")
             except Exception as e:
@@ -973,6 +973,11 @@ class VisionSphereV18_5:
             tasks = []
             for func, label, interval in workers:
                 tasks.append(asyncio.create_task(self.run_worker(client, func, label, interval)))
+                # 🛑 THE FIX: Wait 10 seconds before starting the next worker (Saves RAM)
+                await asyncio.sleep(10)
+
+            # Keep the main loop alive
+            await asyncio.gather(*tasks)
 
             # Keep the main loop alive
             await asyncio.gather(*tasks)
