@@ -633,10 +633,16 @@ class VisionSphereV18_5:
 
     async def fetch_gdelt(self, client):
         """
-        V22 HARDENED: Implements Exponential Backoff and Google-Proxy Fallback 
-        to bypass GDELT 429 Rate Limiting.
+        V22 HARDENED: Implements Exponential Backoff, Headers, and Google-Proxy Fallback 
+        to bypass GDELT 429 Rate Limiting and blockades.
         """
         url = "https://api.gdeltproject.org/api/v2/doc/doc?query=(tone<-2 OR military OR attack) -sports&mode=artlist&format=json&maxrecords=5"
+        
+        # 🛡️ THE FIX: GDELT-Specific Headers to prevent instant connection drops
+        gdelt_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*"
+        }
         
         # 🛡️ STRATEGY 1: Multistage Retry with Exponential Backoff
         for attempt in range(3): # Try 3 times
@@ -645,28 +651,46 @@ class VisionSphereV18_5:
                 wait_time = (attempt * 5) + random.uniform(2.0, 4.0)
                 await asyncio.sleep(wait_time)
                 
-                r = await client.get(url, timeout=20)
+                # Pass the headers here
+                r = await client.get(url, headers=gdelt_headers, timeout=20)
                 
                 if r.status_code == 200:
-                    articles = r.json().get('articles', [])
+                    try:
+                        data = r.json()
+                        articles = data.get('articles', [])
+                    except Exception as e:
+                        print(f"[!] GDELT JSON Parse Error: {e}")
+                        continue
+                        
                     if not articles: continue
                     
-                    raw_items = [{"raw_title": a['title'], "src": f"GDELT ({a.get('sourcecountry', 'INTL')})", "url": a['url']} for a in articles if self.track_viewpoint(a['title'], f"GDELT ({a.get('sourcecountry', 'INTL')})", a['url'])]
-                    results = await asyncio.gather(*(self.process_intel(client, item) for item in raw_items))
-                    return [res for res in results if res]
+                    raw_items = []
+                    for a in articles:
+                        # Defensive dictionary access
+                        title = a.get('title', 'Unknown Event')
+                        link = a.get('url', '')
+                        country = a.get('sourcecountry', 'INTL')
+                        
+                        if link and self.track_viewpoint(title, f"GDELT ({country})", link):
+                            raw_items.append({"raw_title": title, "src": f"GDELT ({country})", "url": link})
+                            
+                    if raw_items:
+                        results = await asyncio.gather(*(self.process_intel(client, item) for item in raw_items))
+                        return [res for res in results if res]
                 
-                if r.status_code == 429:
+                elif r.status_code == 429:
                     print(f"[!] GDELT Mainframe Throttled (Attempt {attempt+1}/3). Backing off...")
-                    continue # Try again after sleep
+                    continue 
                     
             except Exception as e:
-                print(f"[!] GDELT Connection Error: {str(e)}")
+                # Shorten the error string so it doesn't flood your logs
+                print(f"[!] GDELT Connection Error: {str(e)[:40]}")
                 continue
 
         # 🛡️ STRATEGY 2: THE FAILSAFE (The "VisionSphere" Proxy Move)
-        # If GDELT is totally blocked, we pivot to search GDELT's indexed content via Google
         print("[⚡] GDELT API Failed. Activating Google-Proxy Fallback...")
-        fallback_query = "site:gdeltproject.org OR (military conflict) when:1h"
+        # Using when:1d to ensure it finds hits and avoids the ZERO_RESULTS trap
+        fallback_query = "site:gdeltproject.org OR (military conflict) when:1d"
         return await self.fetch_dynamic_crawler(client, fallback_query, "GDELT FAILSAFE")
 
     async def fetch_premium_matrix(self, client):
