@@ -172,102 +172,136 @@ class VisionSphereV18_5:
 
     async def extract_media(self, client, url):
         """
-        Extracts playable video embeds and photo previews.
-        Passes all links through a Google News RSS decoder first.
+        V32 EXTRACTOR: Triple-threat Google URL ripping and advanced media extraction.
         """
-        assets = {"video": None, "photo": None}
+        assets = {"video": None, "photo": None, "real_url": url} # We now track real_url
         target_url = url
 
         # ==========================================
-        #   STAGE 1: GOOGLE NEWS RSS DECODER
+        #   STAGE 1: THE GOOGLE NEWS RIPPER
         # ==========================================
         if "news.google.com" in target_url or "news.url.google.com" in target_url:
+            resolved = False
+            
+            # METHOD 1: Base64 Envelope Rip (Instant, Unblockable)
             try:
-                # 🛑 THE FIX: Force the synchronous decoder into a background thread
-                decoded = await asyncio.to_thread(gnewsdecoder, target_url, interval=1)
-                if decoded and decoded.get("status"):
-                    target_url = decoded.get("decoded_url")
-            except Exception as e:
-                print(f"[!] Google News Decode Error: {e}")
+                import base64
+                parts = target_url.split("articles/")
+                if len(parts) > 1:
+                    encoded_segment = parts[1].split("?")[0]
+                    # Fix padding and URL-safe characters
+                    padding = len(encoded_segment) % 4
+                    if padding: encoded_segment += "=" * (4 - padding)
+                    encoded_segment = encoded_segment.replace('-', '+').replace('_', '/')
+                    
+                    decoded_bytes = base64.b64decode(encoded_segment)
+                    # Regex to find the hidden http/https string inside the binary mess
+                    match = re.search(r'https?://[^\s\x00-\x1f"\'<>]+', decoded_bytes.decode('utf-8', errors='ignore'))
+                    if match and "google.com" not in match.group(0):
+                        target_url = match.group(0)
+                        resolved = True
+            except Exception:
+                pass
+
+            # METHOD 2: The Library (With Strict Timeout)
+            if not resolved:
+                try:
+                    decoded = await asyncio.wait_for(
+                        asyncio.to_thread(gnewsdecoder, target_url, interval=1), 
+                        timeout=8.0
+                    )
+                    if decoded and isinstance(decoded, dict) and decoded.get("status"):
+                        target_url = decoded.get("decoded_url", target_url)
+                        resolved = True
+                except Exception:
+                    pass
+            
+            # METHOD 3: The Brute-Force Redirect
+            if not resolved:
+                try:
+                    # Follow the redirect straight to the source
+                    head_resp = await client.get(target_url, follow_redirects=True, timeout=8.0)
+                    if "google.com" not in str(head_resp.url):
+                        target_url = str(head_resp.url)
+                except Exception:
+                    pass
+
+        # Save the ripped URL to our dictionary
+        assets["real_url"] = target_url
+        final_url = target_url
 
         # ==========================================
-        #   STAGE 2: RESOLUTION & EXTRACTION
+        #   STAGE 2: ADVANCED MEDIA EXTRACTION
         # ==========================================
         try:
-            # Resolve shortlinks (e.g., t.co, vt.tiktok.com) to the final domain
-            try:
-                head_resp = await client.head(target_url, follow_redirects=True, timeout=5.0)
-                final_url = str(head_resp.url)
-            except Exception:
-                final_url = target_url  # Fallback if server blocks HEAD requests
+            # Resolve Twitter/Shortlinks before checking domains
+            if any(short in final_url for short in ["t.co/", "bit.ly/", "ow.ly/"]):
+                try:
+                    head_resp = await client.head(final_url, follow_redirects=True, timeout=5.0)
+                    final_url = str(head_resp.url)
+                    assets["real_url"] = final_url # Update ripped URL again
+                except Exception: pass
 
-            # --- 1. TIKTOK ---
-            if "tiktok.com" in final_url:
+            # --- 1. YOUTUBE (New) ---
+            if "youtube.com" in final_url or "youtu.be" in final_url:
+                if match := re.search(r'(?:v=|youtu\.be/)([^&?]+)', final_url):
+                    vid_id = match.group(1)
+                    assets["video"] = f"https://www.youtube.com/embed/{vid_id}"
+                    assets["photo"] = f"https://img.youtube.com/vi/{vid_id}/maxresdefault.jpg"
+
+            # --- 2. TIKTOK ---
+            elif "tiktok.com" in final_url:
                 if match := re.search(r'video/(\d+)', final_url):
                     video_id = match.group(1)
                     assets["video"] = f"https://www.tiktok.com/embed/v2/{video_id}"
-                    
                     try:
-                        encoded_url = urllib.parse.quote(final_url)
-                        o_req = await client.get(f"https://www.tiktok.com/oembed?url={encoded_url}")
+                        o_req = await client.get(f"https://www.tiktok.com/oembed?url={urllib.parse.quote(final_url)}", timeout=5.0)
                         if o_req.status_code == 200:
                             assets["photo"] = o_req.json().get("thumbnail_url")
-                    except Exception:
-                        pass
+                    except: pass
 
-            # --- 2. X / TWITTER ---
+            # --- 3. X / TWITTER ---
             elif any(domain in final_url for domain in ["x.com", "twitter.com"]):
                 if match := re.search(r'status/(\d+)', final_url):
                     tweet_id = match.group(1)
                     assets["video"] = f"https://platform.twitter.com/embed/Tweet.html?id={tweet_id}"
-                    
                     try:
-                        vx_req = await client.get(f"https://api.vxtwitter.com/i/status/{tweet_id}")
+                        vx_req = await client.get(f"https://api.vxtwitter.com/i/status/{tweet_id}", timeout=5.0)
                         if vx_req.status_code == 200:
-                            vx_data = vx_req.json()
-                            if media := vx_data.get("media_extended", []):
+                            media = vx_req.json().get("media_extended", [])
+                            if media:
                                 assets["photo"] = media[0].get("thumbnail_url") or media[0].get("url")
-                    except Exception:
-                        pass
+                    except: pass
 
-            # --- 3. TELEGRAM ---
+            # --- 4. TELEGRAM ---
             elif "t.me" in final_url:
                 clean_tg = final_url.split('?')[0]
                 if re.search(r'/[^/]+/\d+', clean_tg):
                     assets["video"] = f"{clean_tg}?embed=1"
-                    
                 try:
-                    tg_req = await client.get(clean_tg, follow_redirects=True)
+                    tg_req = await client.get(clean_tg, follow_redirects=True, timeout=5.0)
                     soup = BeautifulSoup(tg_req.text, "html.parser")
                     if og_img := soup.find("meta", property="og:image"):
                         pic_url = og_img.get("content")
                         if "tgme_logo" not in pic_url:
                             assets["photo"] = pic_url
-                except Exception:
-                    pass
+                except: pass
 
-            # --- 4. GENERAL FALLBACK ---
+            # --- 5. OMNI-FALLBACK (Advanced) ---
             else:
                 try:
-                    req = await client.get(final_url, follow_redirects=True)
+                    req = await client.get(final_url, follow_redirects=True, timeout=8.0)
                     soup = BeautifulSoup(req.text, "html.parser")
                     
-                    twitter_player = soup.find("meta", attrs={"name": "twitter:player"})
-                    og_vid_secure = soup.find("meta", property="og:video:secure_url")
-                    og_vid = soup.find("meta", property="og:video")
-                    
-                    if twitter_player:
-                        assets["video"] = twitter_player.get("content")
-                    elif og_vid_secure:
-                        assets["video"] = og_vid_secure.get("content")
-                    elif og_vid:
-                        assets["video"] = og_vid.get("content")
+                    # Video Hunters
+                    if twit_vid := soup.find("meta", attrs={"name": "twitter:player"}): assets["video"] = twit_vid.get("content")
+                    elif og_vid := soup.find("meta", property="og:video:secure_url") or soup.find("meta", property="og:video"): assets["video"] = og_vid.get("content")
+                    elif iframe := soup.find("iframe"): assets["video"] = iframe.get("src")
                         
-                    og_img = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
-                    if og_img:
+                    # Image Hunters
+                    if og_img := soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"}):
                         assets["photo"] = og_img.get("content")
-                except Exception:
-                    pass
+                except: pass
 
         except Exception as e:
             print(f"[!] Extraction Error: {e}")
@@ -276,8 +310,8 @@ class VisionSphereV18_5:
         #   STAGE 3: CLEANUP
         # ==========================================
         for k in ["video", "photo"]:
-            if isinstance(assets[k], str):
-                assets[k] = assets[k].replace('\\u002F', '/')
+            if isinstance(assets.get(k), str):
+                assets[k] = assets[k].replace('\\u002F', '/').replace('&amp;', '&')
 
         return assets
 
