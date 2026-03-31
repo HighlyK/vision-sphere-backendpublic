@@ -979,9 +979,6 @@ class VisionSphereV18_5:
             # Keep the main loop alive
             await asyncio.gather(*tasks)
 
-            # Keep the main loop alive
-            await asyncio.gather(*tasks)
-
 # --- [ TEST TRIGGER ] ---
 if __name__ == "__main__":
     engine = VisionSphereV18_5()
