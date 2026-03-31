@@ -958,11 +958,12 @@ class VisionSphereV18_5:
         async with httpx.AsyncClient(timeout=30.0, headers=self.headers, follow_redirects=True) as client:
             # Define your workers and their "Freshness Intervals"
             workers = [
-                (self.fetch_x_stealth, "X_SHADOW", 300),          # Every 5 mins
-                (self.fetch_telegram_stealth, "TELEGRAM", 600),   # Every 10 mins
-                (self.fetch_tiktok_stealth, "TIKTOK", 900),       # Every 15 mins
-                (self.fetch_premium_matrix, "PREMIUM", 1200),     # Every 20 mins
-                (self.parse_and_fetch_opml, "GLOBAL_OPML", 3600), # Every hour
+                (self.fetch_x_stealth, "X_SHADOW", 420),          # Every 7 mins
+                (self.fetch_telegram_stealth, "TELEGRAM", 420),    # Every 7 mins
+                (self.fetch_tiktok_stealth, "TIKTOK", 420),        # Every 7 mins
+                (self.fetch_premium_matrix, "PREMIUM", 420),       # Every 7 mins
+                (self.parse_and_fetch_opml, "GLOBAL_OPML", 420),
+                (self.fetch_gdelt, "GDELT", 420)
             ]
 
             # Start the Health Check (Crucial for Render.com)
