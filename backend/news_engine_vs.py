@@ -175,59 +175,166 @@ class VisionSphereV18_5:
             "media": { "video": None, "photo": None },
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
+    async def decode_google_news_url(self, client, url: str) -> dict:
+        """
+        Decodes Google News URLs natively using the SSujitX BatchExecute architecture.
+        Returns: {"status": bool, "url": str, "method": str, "error": str}
+        """
+        result = {"status": False, "url": url, "method": None, "error": None}
+        
+        if "news.google.com" not in url:
+            result["error"] = "Not a Google News URL. No decoding required."
+            return result
 
+        # ==========================================
+        # STEP 1: EXTRACT BASE64 ID
+        # ==========================================
+        match = re.search(r'(?:articles|read)/([^?\/]+)', url)
+        if not match:
+            result["error"] = "Invalid Format: Could not extract Base64 ID from the URL path."
+            return result
+        
+        b64_id = match.group(1)
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "cross-site",
+        }
+
+        try:
+            # ==========================================
+            # STEP 2: FETCH PARAMS (Signature & Timestamp)
+            # ==========================================
+            sg, ts = None, None
+            
+            # Attempt 1: Standard Article Path
+            resp1 = await client.get(f"https://news.google.com/articles/{b64_id}", headers=headers, follow_redirects=True)
+            html1 = resp1.text
+            
+            sg_match = re.search(r'data-n-a-sg="([^"]+)"', html1)
+            ts_match = re.search(r'data-n-a-ts="([^"]+)"', html1)
+            
+            if sg_match and ts_match:
+                sg, ts = sg_match.group(1), ts_match.group(1)
+            else:
+                # Attempt 2: RSS Fallback Path
+                resp2 = await client.get(f"https://news.google.com/rss/articles/{b64_id}", headers=headers, follow_redirects=True)
+                html2 = resp2.text
+                
+                sg_match = re.search(r'data-n-a-sg="([^"]+)"', html2)
+                ts_match = re.search(r'data-n-a-ts="([^"]+)"', html2)
+                
+                if sg_match and ts_match:
+                    sg, ts = sg_match.group(1), ts_match.group(1)
+                else:
+                    # 🚨 DIAGNOSE EXACT FAILURE REASON
+                    if "recaptcha" in html1 or "recaptcha" in html2:
+                        result["error"] = "Blocked: Google served a reCAPTCHA challenge instead of the article."
+                    elif resp1.status_code == 429 or resp2.status_code == 429:
+                        result["error"] = "Rate Limited: Google returned HTTP 429 Too Many Requests."
+                    elif resp1.status_code != 200 and resp2.status_code != 200:
+                        result["error"] = f"HTTP Error: Article fetch returned {resp1.status_code} / {resp2.status_code}"
+                    else:
+                        result["error"] = "Missing Tags: The data-n-a-sg and data-n-a-ts attributes were not found in the HTML."
+                    
+                    # --- EMERGENCY FALLBACK: LOCAL BINARY SLICE ---
+                    # If Google blocked us from getting the signature, we try to forcefully slice the URL out of the base64 string
+                    try:
+                        b_str = b64_id.replace('-', '+').replace('_', '/')
+                        b_str += '=' * (-len(b_str) % 4)
+                        decoded_bytes = base64.b64decode(b_str)
+                        data_str = decoded_bytes.decode('latin-1', errors='ignore')
+                        url_start = data_str.find("http")
+                        
+                        if url_start != -1:
+                            potential_url = data_str[url_start:]
+                            url_match = re.search(r'https?://[^\s\x00-\x1f\x7f-\xff"\'<>]+', potential_url)
+                            if url_match:
+                                result["status"] = True
+                                result["url"] = url_match.group(0)
+                                result["method"] = "emergency_binary_slice"
+                                result["error"] += " -> [RECOVERED VIA BINARY SLICE]"
+                                return result
+                    except Exception:
+                        pass # Keep the original failure error if binary slice fails too
+                    
+                    return result
+
+            # ==========================================
+            # STEP 3: THE BATCH-EXECUTE HANDSHAKE
+            # ==========================================
+            batch_url = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
+            
+            # DeepWiki exact payload structure
+            inner_payload = f'["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],"{b64_id}",{ts},"{sg}"]'
+            req_array = [[["Fbv4je", inner_payload, None, "generic"]]]
+            
+            data = {"f.req": json.dumps(req_array)}
+            
+            post_headers = headers.copy()
+            post_headers["Content-Type"] = "application/x-www-form-urlencoded;charset=UTF-8"
+            
+            batch_resp = await client.post(batch_url, headers=post_headers, data=data)
+            
+            if batch_resp.status_code != 200:
+                result["error"] = f"BatchExecute Failed: Google returned HTTP {batch_resp.status_code} on POST."
+                return result
+                
+            # ==========================================
+            # STEP 4: PARSE FINAL URL
+            # ==========================================
+            batch_text = batch_resp.text
+            
+            # Extract the real URL embedded in the nested JSON response string
+            url_regex = re.search(r'"(https?://[^"]+)"', batch_text)
+            
+            if url_regex:
+                decoded_url = url_regex.group(1)
+                
+                # Final validation to ensure Google didn't return a secondary captcha link
+                if "google.com/recaptcha" in decoded_url or "accounts.google.com" in decoded_url:
+                    result["error"] = "Soft Block: BatchExecute succeeded but returned a Captcha/Login URL."
+                    return result
+                    
+                result["status"] = True
+                result["url"] = decoded_url
+                result["method"] = "deepwiki_batchexecute"
+                return result
+            else:
+                result["error"] = "Parse Error: Could not find a valid URL in the BatchExecute response array."
+                return result
+
+        except Exception as e:
+            result["error"] = f"Fatal Decode Crash: {type(e).__name__} - {str(e)}"
+            return result
+            
     async def extract_media(self, client, url):
-        """
-        V72 GHOST-PROTOCOL:
-        - Zero-Library: googlenewsdecoder removed.
-        - Cloudflare Native: Uses V66 Worker for BatchExecute handshakes.
-        - Anti-Fail: Strict validation to prevent scraping Google-owned dead ends.
-        """
         start_time = time.time()
         assets = {"video": None, "photo": None, "real_url": url}
-        BRIDGE_URL = "https://extractor.vision-sphere-3d.workers.dev"
         
-        print(f"\n👻 [V72_GHOST] Initializing: {url[:55]}...")
+        print(f"\n⚡ [START] Target: {url[:55]}...")
 
-        # ==========================================
-        #   STAGE 1: EDGE API DECODE (The Shield)
-        # ==========================================
+        # --- THE DECODE STAGE ---
         if "news.google.com" in url:
-            try:
-                print("📡 [DEBUG] Calling Edge API for BatchExecute handshake...")
-                # We pass the URL to our private Cloudflare "Groq-style" Decoder
-                resp = await client.get(f"{BRIDGE_URL}/?url={url}", timeout=10.0)
+            print("📡 [DECODER] Running Local DeepWiki Handshake...")
+            decode_result = await self.decode_google_news_url(client, url)
+            
+            if decode_result["status"]:
+                assets["real_url"] = decode_result["url"]
+                print(f"🎯 [HIT] Decoded ({decode_result['method']}): {assets['real_url'][:60]}")
+            else:
+                print(f"🚫 [DECODE_FAIL] Reason: {decode_result['error']}")
+                return assets # Stop early to avoid hitting dead ends
                 
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get("status") and "news.google.com" not in data.get("decoded_url", ""):
-                        assets["real_url"] = data["decoded_url"]
-                        method = data.get("method", "unknown")
-                        print(f"🎯 [EDGE_HIT] Success ({method}): {assets['real_url'][:60]}")
-                    else:
-                        print("⚠️ [EDGE_MISS] Worker returned original or invalid URL. Aborting.")
-                        return assets # Stop early to avoid hitting Google from Render
-                elif resp.status_code == 429:
-                    print("🚫 [RATE_LIMIT] Cloudflare Worker is flagged. IP range rotation needed.")
-                    return assets
-                else:
-                    print(f"❌ [API_FAIL] Worker returned status: {resp.status_code}")
-                    return assets
-
-            except Exception as e:
-                print(f"💥 [DECODE_CRASH] Edge API error: {str(e)}")
-                return assets
-
-        # ==========================================
-        #   STAGE 2: PRECISION EXTRACTION
-        # ==========================================
+        # --- STAGE 2: MULTI-PLATFORM EXTRACTION ---
         target = assets.get("real_url")
-        
-        # Final Safety Check: Never hit news.google.com from Render IP
         if not target or "news.google.com" in target:
-            print("🛑 [SAFETY] Aborting: Target URL is still a Google News link.")
             return assets
-
+            
         print(f"🔎 [SCRAPE] Accessing real source: {target[:60]}")
 
         try:
