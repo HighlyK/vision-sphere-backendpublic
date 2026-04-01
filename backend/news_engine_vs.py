@@ -175,9 +175,12 @@ class VisionSphereV18_5:
             "media": { "video": None, "photo": None },
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
+
+
     async def decode_google_news_url(self, client, url: str) -> dict:
         """
-        Decodes Google News URLs natively using the SSujitX BatchExecute architecture.
+        Decodes Google News URLs using a Preemptive Binary Slice. 
+        Falls back to a synchronized, rate-limit-safe BatchExecute handshake.
         Returns: {"status": bool, "url": str, "method": str, "error": str}
         """
         result = {"status": False, "url": url, "method": None, "error": None}
@@ -186,132 +189,141 @@ class VisionSphereV18_5:
             result["error"] = "Not a Google News URL. No decoding required."
             return result
 
-        # ==========================================
-        # STEP 1: EXTRACT BASE64 ID
-        # ==========================================
+        # Extract Base64 ID once
         match = re.search(r'(?:articles|read)/([^?\/]+)', url)
         if not match:
             result["error"] = "Invalid Format: Could not extract Base64 ID from the URL path."
             return result
         
         b64_id = match.group(1)
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "cross-site",
-        }
 
+        # ==========================================
+        # STAGE 0: PREEMPTIVE BINARY SLICE (Zero-Network)
+        # ==========================================
+        # Try to mathematically extract the URL first. If this works, we save an API call.
         try:
-            # ==========================================
-            # STEP 2: FETCH PARAMS (Signature & Timestamp)
-            # ==========================================
-            sg, ts = None, None
+            b_str = b64_id.replace('-', '+').replace('_', '/')
+            b_str += '=' * (-len(b_str) % 4)
+            decoded_bytes = base64.b64decode(b_str)
+            data_str = decoded_bytes.decode('latin-1', errors='ignore')
             
-            # Attempt 1: Standard Article Path
-            resp1 = await client.get(f"https://news.google.com/articles/{b64_id}", headers=headers, follow_redirects=True)
-            html1 = resp1.text
+            url_start = data_str.find("http")
+            if url_start != -1:
+                potential_url = data_str[url_start:]
+                url_match = re.search(r'https?://[^\s\x00-\x1f\x7f-\xff"\'<>]+', potential_url)
+                if url_match:
+                    result["status"] = True
+                    result["url"] = url_match.group(0)
+                    result["method"] = "preemptive_binary_slice"
+                    return result
+        except Exception:
+            pass # If math extraction fails, we proceed to the network handshake
+
+        # ==========================================
+        # STAGE 1: CONCURRENCY QUEUE & JITTER
+        # ==========================================
+        # Attach a lock to the class instance to ensure only ONE network request happens at a time
+        if not hasattr(self, "_google_lock"):
+            self._google_lock = asyncio.Lock()
             
-            sg_match = re.search(r'data-n-a-sg="([^"]+)"', html1)
-            ts_match = re.search(r'data-n-a-ts="([^"]+)"', html1)
+        async with self._google_lock:
+            # Add a random human-like delay between 0.5 and 1.5 seconds
+            await asyncio.sleep(random.uniform(0.5, 1.5))
             
-            if sg_match and ts_match:
-                sg, ts = sg_match.group(1), ts_match.group(1)
-            else:
-                # Attempt 2: RSS Fallback Path
-                resp2 = await client.get(f"https://news.google.com/rss/articles/{b64_id}", headers=headers, follow_redirects=True)
-                html2 = resp2.text
+            # Rotate User-Agents to avoid static fingerprinting
+            uas = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ]
+            
+            headers = {
+                "User-Agent": random.choice(uas),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "cross-site",
+            }
+
+            try:
+                # ==========================================
+                # STAGE 2: FETCH PARAMS (Signature & Timestamp)
+                # ==========================================
+                sg, ts = None, None
                 
-                sg_match = re.search(r'data-n-a-sg="([^"]+)"', html2)
-                ts_match = re.search(r'data-n-a-ts="([^"]+)"', html2)
+                resp1 = await client.get(f"https://news.google.com/articles/{b64_id}", headers=headers, follow_redirects=True)
+                html1 = resp1.text
+                
+                sg_match = re.search(r'data-n-a-sg="([^"]+)"', html1)
+                ts_match = re.search(r'data-n-a-ts="([^"]+)"', html1)
                 
                 if sg_match and ts_match:
                     sg, ts = sg_match.group(1), ts_match.group(1)
                 else:
-                    # 🚨 DIAGNOSE EXACT FAILURE REASON
-                    if "recaptcha" in html1 or "recaptcha" in html2:
-                        result["error"] = "Blocked: Google served a reCAPTCHA challenge instead of the article."
-                    elif resp1.status_code == 429 or resp2.status_code == 429:
-                        result["error"] = "Rate Limited: Google returned HTTP 429 Too Many Requests."
-                    elif resp1.status_code != 200 and resp2.status_code != 200:
-                        result["error"] = f"HTTP Error: Article fetch returned {resp1.status_code} / {resp2.status_code}"
+                    resp2 = await client.get(f"https://news.google.com/rss/articles/{b64_id}", headers=headers, follow_redirects=True)
+                    html2 = resp2.text
+                    
+                    sg_match = re.search(r'data-n-a-sg="([^"]+)"', html2)
+                    ts_match = re.search(r'data-n-a-ts="([^"]+)"', html2)
+                    
+                    if sg_match and ts_match:
+                        sg, ts = sg_match.group(1), ts_match.group(1)
                     else:
-                        result["error"] = "Missing Tags: The data-n-a-sg and data-n-a-ts attributes were not found in the HTML."
+                        if "recaptcha" in html1 or "recaptcha" in html2:
+                            result["error"] = "Blocked: Google served a reCAPTCHA challenge instead of the article."
+                        elif resp1.status_code == 429 or resp2.status_code == 429:
+                            result["error"] = "Rate Limited: Google returned HTTP 429 Too Many Requests."
+                        else:
+                            result["error"] = "Missing Tags: The data-n-a-sg and data-n-a-ts attributes were not found."
+                        return result
+
+                # ==========================================
+                # STAGE 3: THE BATCH-EXECUTE HANDSHAKE
+                # ==========================================
+                batch_url = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
+                
+                inner_payload = f'["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],"{b64_id}",{ts},"{sg}"]'
+                req_array = [[["Fbv4je", inner_payload, None, "generic"]]]
+                
+                data = {"f.req": json.dumps(req_array)}
+                
+                post_headers = headers.copy()
+                post_headers["Content-Type"] = "application/x-www-form-urlencoded;charset=UTF-8"
+                
+                # Tiny micro-pause before POST to simulate page loading
+                await asyncio.sleep(random.uniform(0.2, 0.5))
+                
+                batch_resp = await client.post(batch_url, headers=post_headers, data=data)
+                
+                if batch_resp.status_code != 200:
+                    result["error"] = f"BatchExecute Failed: Google returned HTTP {batch_resp.status_code} on POST."
+                    return result
                     
-                    # --- EMERGENCY FALLBACK: LOCAL BINARY SLICE ---
-                    # If Google blocked us from getting the signature, we try to forcefully slice the URL out of the base64 string
-                    try:
-                        b_str = b64_id.replace('-', '+').replace('_', '/')
-                        b_str += '=' * (-len(b_str) % 4)
-                        decoded_bytes = base64.b64decode(b_str)
-                        data_str = decoded_bytes.decode('latin-1', errors='ignore')
-                        url_start = data_str.find("http")
+                # ==========================================
+                # STAGE 4: PARSE FINAL URL
+                # ==========================================
+                url_regex = re.search(r'"(https?://[^"]+)"', batch_resp.text)
+                
+                if url_regex:
+                    decoded_url = url_regex.group(1)
+                    
+                    if "google.com/recaptcha" in decoded_url or "accounts.google.com" in decoded_url:
+                        result["error"] = "Soft Block: BatchExecute succeeded but returned a Captcha/Login URL."
+                        return result
                         
-                        if url_start != -1:
-                            potential_url = data_str[url_start:]
-                            url_match = re.search(r'https?://[^\s\x00-\x1f\x7f-\xff"\'<>]+', potential_url)
-                            if url_match:
-                                result["status"] = True
-                                result["url"] = url_match.group(0)
-                                result["method"] = "emergency_binary_slice"
-                                result["error"] += " -> [RECOVERED VIA BINARY SLICE]"
-                                return result
-                    except Exception:
-                        pass # Keep the original failure error if binary slice fails too
-                    
+                    result["status"] = True
+                    result["url"] = decoded_url
+                    result["method"] = "deepwiki_batchexecute"
+                    return result
+                else:
+                    result["error"] = "Parse Error: Could not find a valid URL in the BatchExecute response array."
                     return result
 
-            # ==========================================
-            # STEP 3: THE BATCH-EXECUTE HANDSHAKE
-            # ==========================================
-            batch_url = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
-            
-            # DeepWiki exact payload structure
-            inner_payload = f'["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],"{b64_id}",{ts},"{sg}"]'
-            req_array = [[["Fbv4je", inner_payload, None, "generic"]]]
-            
-            data = {"f.req": json.dumps(req_array)}
-            
-            post_headers = headers.copy()
-            post_headers["Content-Type"] = "application/x-www-form-urlencoded;charset=UTF-8"
-            
-            batch_resp = await client.post(batch_url, headers=post_headers, data=data)
-            
-            if batch_resp.status_code != 200:
-                result["error"] = f"BatchExecute Failed: Google returned HTTP {batch_resp.status_code} on POST."
-                return result
-                
-            # ==========================================
-            # STEP 4: PARSE FINAL URL
-            # ==========================================
-            batch_text = batch_resp.text
-            
-            # Extract the real URL embedded in the nested JSON response string
-            url_regex = re.search(r'"(https?://[^"]+)"', batch_text)
-            
-            if url_regex:
-                decoded_url = url_regex.group(1)
-                
-                # Final validation to ensure Google didn't return a secondary captcha link
-                if "google.com/recaptcha" in decoded_url or "accounts.google.com" in decoded_url:
-                    result["error"] = "Soft Block: BatchExecute succeeded but returned a Captcha/Login URL."
-                    return result
-                    
-                result["status"] = True
-                result["url"] = decoded_url
-                result["method"] = "deepwiki_batchexecute"
-                return result
-            else:
-                result["error"] = "Parse Error: Could not find a valid URL in the BatchExecute response array."
+            except Exception as e:
+                result["error"] = f"Fatal Decode Crash: {type(e).__name__} - {str(e)}"
                 return result
 
-        except Exception as e:
-            result["error"] = f"Fatal Decode Crash: {type(e).__name__} - {str(e)}"
-            return result
-            
     async def extract_media(self, client, url):
         start_time = time.time()
         assets = {"video": None, "photo": None, "real_url": url}
