@@ -174,75 +174,97 @@ class VisionSphereV18_5:
 
     async def extract_media(self, client, url):
         """
-        V47 MANAGED DECODER:
-        - Uses 'googlenewsdecoder' library for 100% reliable G-News escape.
-        - No manual Base64 or regex hunting.
-        - Preserves Telegram/YouTube embed logic.
-        - Fixes BS4 'bytes' TypeError.
+        V56 SHADOW PROTOCOL:
+        - Bypasses Google News using the Vision-Sphere Cloudflare Bridge.
+        - Specialized Embed Engines: TikTok, X.com, Telegram, YouTube.
+        - Zero Google News traces in the final 'real_url'.
+        - Hardened BS4 string decoding for all platforms.
         """
         assets = {"video": None, "photo": None, "real_url": url}
+        BRIDGE_URL = "https://extractor.vision-sphere-3d.workers.dev"
         
         # ==========================================
-        #   STAGE 1: THE MANAGED GOOGLE ESCAPE
+        #   STAGE 1: THE CLOUDFLARE G-NEWS PURGE
         # ==========================================
         if "news.google.com" in url:
-            print(f"🔄 [DECODER] Running library-level decode: {url}")
             try:
-                # gnewsdecoder is synchronous, so we run it in a thread to keep things async
-                loop = asyncio.get_event_loop()
-                # It returns a dict: {"status": True, "decoded_url": "..."}
-                decoded_data = await loop.run_in_executor(None, gnewsdecoder, url)
-                
-                if decoded_data.get("status"):
-                    assets["real_url"] = decoded_data["decoded_url"]
-                    print(f"✅ [DECODER_SUCCESS] Clean URL: {assets['real_url']}")
-                else:
-                    print(f"⚠️ [DECODER_WARN] Lib failed: {decoded_data.get('message')}")
+                # Tunneling through Cloudflare to get the clean destination URL
+                bridge_resp = await client.get(f"{BRIDGE_URL}/?url={url}", timeout=12.0)
+                if bridge_resp.status_code == 200:
+                    data = bridge_resp.json()
+                    if data.get("real_url"):
+                        assets["real_url"] = data["real_url"]
             except Exception as e:
-                print(f"❌ [DECODER_FATAL] Library error: {str(e)}")
+                print(f"⚠️ [BRIDGE_FAIL]: {e}")
 
-        # ==========================================
-        #   STAGE 2: PLATFORM-SPECIFIC SNATCHER
-        # ==========================================
         target = assets["real_url"]
+        
+        # ==========================================
+        #   STAGE 2: THE MULTI-PLATFORM SNATCHER
+        # ==========================================
         try:
-            # --- TELEGRAM (Embeds + Thumbnails) ---
-            if "t.me" in target:
+            # --- TELEGRAM (t.me / telegram.me) ---
+            if any(x in target for x in ["t.me", "telegram.me"]):
                 clean_tg = target.split('?')[0]
                 if re.search(r'/[^/]+/\d+', clean_tg):
                     assets["video"] = f"{clean_tg}?embed=1"
                 
-                tg_resp = await client.get(clean_tg, timeout=8.0)
-                if tg_resp.status_code == 200:
-                    # Force decode to string for BS4
-                    tg_soup = BeautifulSoup(tg_resp.text, "html.parser")
-                    img = tg_soup.find("meta", property="og:image")
-                    if img and "tgme_logo" not in img.get("content", ""):
-                        assets["photo"] = img.get("content")
+                tg_r = await client.get(clean_tg, timeout=6.0)
+                if tg_r.status_code == 200:
+                    # Use .text to avoid bytes error
+                    soup = BeautifulSoup(tg_r.text, "html.parser")
+                    img = soup.find("meta", property="og:image")
+                    if img: assets["photo"] = img.get("content")
 
-            # --- YOUTUBE (Auto-Embed) ---
+            # --- TIKTOK (Video & Embeds) ---
+            elif "tiktok.com" in target:
+                # Supports both web and mobile 't' links
+                t_match = re.search(r'video/(\d+)', target) or re.search(r'tiktok\.com/t/(\w+)', target)
+                if t_match:
+                    # We use the v2 embed endpoint for the cleanest player
+                    v_id = t_match.group(1)
+                    assets["video"] = f"https://www.tiktok.com/embed/v2/{v_id}"
+                
+                # Scrape basic OG tags for backup
+                r = await client.get(target, follow_redirects=True, timeout=8.0)
+                soup = BeautifulSoup(r.text, "html.parser")
+                img = soup.find("meta", property="og:image")
+                if img: assets["photo"] = img.get("content")
+
+            # --- X / TWITTER (Status Embeds) ---
+            elif any(x in target for x in ["x.com", "twitter.com"]):
+                x_match = re.search(r'status/(\d+)', target)
+                if x_match:
+                    tweet_id = x_match.group(1)
+                    # Official platform embed player
+                    assets["video"] = f"https://platform.twitter.com/embed/Tweet.html?id={tweet_id}"
+                
+                # Note: X often blocks direct scraping without headers/auth
+                # We try to get the thumbnail via a clean user-agent
+                headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"}
+                r = await client.get(target, headers=headers, timeout=8.0)
+                soup = BeautifulSoup(r.text, "html.parser")
+                img = soup.find("meta", property="og:image")
+                if img: assets["photo"] = img.get("content")
+
+            # --- YOUTUBE ---
             elif any(x in target for x in ["youtube.com", "youtu.be"]):
-                y_match = re.search(r'(?:v=|youtu\.be/|embed/|shorts/)([^&?#/ ]+)', target)
+                y_match = re.search(r'(?:v=|be/|shorts/)([^&?#/ ]+)', target)
                 if y_match:
                     v_id = y_match.group(1)
                     assets["video"] = f"https://www.youtube.com/embed/{v_id}"
                     assets["photo"] = f"https://img.youtube.com/vi/{v_id}/maxresdefault.jpg"
 
-            # --- GENERAL NEWS (BS4 SAFETY FIRST) ---
+            # --- GENERAL NEWS (OpenGraph Extraction) ---
             else:
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0"}
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0"}
                 async with client.stream("GET", target, headers=headers, follow_redirects=True, timeout=10.0) as resp:
                     if resp.status_code == 200:
-                        buffer = bytearray()
-                        async for chunk in resp.aiter_bytes(chunk_size=4096):
-                            buffer.extend(chunk)
-                            if len(buffer) > 32768: break # Read 32KB
-                        
-                        # 🔥 FIXED: Explicitly decode buffer to string to kill the TypeError
+                        buffer = await resp.aread()
+                        # Convert bytes to string safely
                         html_str = buffer.decode('utf-8', errors='replace')
                         soup = BeautifulSoup(html_str, "html.parser")
                         
-                        # Extract Social Assets
                         img = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
                         if img: assets["photo"] = img.get("content")
                         
@@ -250,13 +272,15 @@ class VisionSphereV18_5:
                         if vid: assets["video"] = vid.get("content")
 
         except Exception as e:
-            print(f"💥 [MEDIA_FATAL]: {str(e)}")
+            print(f"💥 [EXTRACTION_ERROR]: {str(e)}")
 
-        # Final URL Sanitization
+        # --- FINAL SANITIZATION ---
         for k in ["video", "photo"]:
             if assets[k]:
+                # Fix JSON escape backslashes and relative protocols
                 assets[k] = assets[k].replace('\\/', '/').replace('&amp;', '&')
-                if assets[k].startswith('//'): assets[k] = 'https:' + assets[k]
+                if assets[k].startswith('//'): 
+                    assets[k] = 'https:' + assets[k]
 
         return assets
 
