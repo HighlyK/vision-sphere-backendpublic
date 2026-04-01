@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 import time
 import logging
 import re
-from googlenewsdecoder import gnewsdecoder
+#from googlenewsdecoder import gnewsdecoder
+import googlenewsdecoder
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import base64
