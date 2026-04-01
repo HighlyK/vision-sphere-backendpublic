@@ -174,113 +174,93 @@ class VisionSphereV18_5:
 
     async def extract_media(self, client, url):
         """
-        V42 FULL SEND: 
-        - Fixes BS4 'bytes-like object' TypeError.
-        - Full Telegram Embed Support.
-        - Aggressive Google News Escape (Bouncer).
-        - Loud logging for all stages.
+        V44 CHROME GHOST:
+        - NO BASE64 DECODING.
+        - Pure HTTP/HTML redirect following.
+        - Fixes BS4 'bytes' TypeError by force-decoding.
+        - Full Telegram support.
         """
         assets = {"video": None, "photo": None, "real_url": url}
         final_url = url
 
         # ==========================================
-        #   STAGE 1: THE AGGRESSIVE GOOGLE BOUNCER
+        #   STAGE 1: THE CHROME GHOST (GOOGLE ESCAPE)
         # ==========================================
-        if "google.com" in final_url:
-            print(f"🔄 [BOUNCE] Hitting Google News: {final_url}")
+        if "news.google.com" in final_url:
+            print(f"🔄 [ESCAPE] Bypassing Google News: {final_url}")
+            
+            # We use a very specific User-Agent to make Google trigger the auto-redirect
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
                 "Referer": "https://news.google.com/"
             }
             
             try:
-                # 1. Follow HTTP Redirects
+                # 1. Follow HTTP 302s automatically
                 resp = await client.get(final_url, headers=headers, follow_redirects=True, timeout=12.0)
                 final_url = str(resp.url)
                 
-                # 2. Handle the "Redirecting..." HTML trap
+                # 2. If we are STILL on Google, they are using an HTML "Redirecting..." page
                 if "google.com" in final_url:
-                    print("⚠️ [BOUNCE_STUCK] Trapped on Google HTML page. Scavenging for exit...")
-                    # Fix: Decode to string immediately to prevent BS4 TypeError
-                    page_text = resp.text 
-                    soup = BeautifulSoup(page_text, "html.parser")
+                    print("⚠️ [ESCAPE_STUCK] On redirect page. Snatching the 'Click Here' link...")
                     
-                    # Try Meta Refresh tag first
-                    meta_refresh = soup.find("meta", attrs={"http-equiv": lambda x: x and x.lower() == "refresh"})
-                    if meta_refresh:
-                        content = meta_refresh.get("content", "")
-                        match = re.search(r'url=([^;]+)', content, re.IGNORECASE)
-                        if match:
-                            final_url = match.group(1).strip("'\" ")
+                    # Force decode to string to stop the BS4 TypeError
+                    html_content = resp.text 
+                    soup = BeautifulSoup(html_content, "html.parser")
                     
-                    # If still stuck, use Search & Rescue Regex
+                    # A: Check for <meta http-equiv="refresh" content="0;url=...">
+                    refresh_tag = soup.find("meta", attrs={"http-equiv": lambda x: x and x.lower() == "refresh"})
+                    if refresh_tag:
+                        content = refresh_tag.get("content", "")
+                        if "url=" in content.lower():
+                            final_url = content.lower().split("url=")[-1].strip("'\" ")
+                    
+                    # B: Check for the manual anchor tag <a href="...">
                     if "google.com" in final_url:
-                        links = re.findall(r'https?://[^\s"\'<>]+', page_text)
-                        valid_links = [l for l in links if "google.com" not in l and "gstatic.com" not in l]
-                        if valid_links:
-                            final_url = max(valid_links, key=len)
-
-                if "google.com" in final_url:
-                    raise ValueError(f"BOUNCE_FAIL: Still stuck on Google: {final_url}")
+                        # Find any link that DOES NOT contain 'google' or 'gstatic'
+                        all_links = soup.find_all("a", href=True)
+                        for link in all_links:
+                            href = link['href']
+                            if "http" in href and "google.com" not in href:
+                                final_url = href
+                                break
 
                 assets["real_url"] = final_url
-                print(f"✅ [BOUNCE_SUCCESS] Reached: {final_url}")
+                print(f"✅ [ESCAPE_SUCCESS] Landed on: {final_url}")
 
             except Exception as e:
-                print(f"❌ [STAGE_1_FATAL]: {str(e)}")
-                # We don't raise here to allow the worker to try the original URL at least.
+                print(f"❌ [ESCAPE_ERR]: {str(e)}")
 
         # ==========================================
-        #   STAGE 2: PLATFORM-SPECIFIC SNATCHER
+        #   STAGE 2: MEDIA SNATCHER
         # ==========================================
         target = assets["real_url"]
-        
         try:
-            # --- 1. TELEGRAM (Direct Support) ---
+            # --- TELEGRAM ---
             if "t.me" in target:
                 clean_tg = target.split('?')[0]
-                # Check if it's a specific post (t.me/channel/123)
                 if re.search(r'/[^/]+/\d+', clean_tg):
                     assets["video"] = f"{clean_tg}?embed=1"
                 
-                print(f"📡 [TG_FETCH] Scraping Telegram preview: {clean_tg}")
-                tg_resp = await client.get(clean_tg, follow_redirects=True, timeout=8.0)
+                tg_resp = await client.get(clean_tg, timeout=8.0)
                 if tg_resp.status_code == 200:
-                    # Explicitly decode to string for BS4 safety
+                    # Force decode to string for BS4
                     tg_soup = BeautifulSoup(tg_resp.text, "html.parser")
-                    og_img = tg_soup.find("meta", property="og:image")
-                    if og_img and "tgme_logo" not in og_img.get("content", ""):
-                        assets["photo"] = og_img.get("content")
-                        print(f"📸 [TG_IMAGE] Found: {assets['photo']}")
-                else:
-                    print(f"⚠️ [TG_WARN] Telegram returned status {tg_resp.status_code}")
+                    img = tg_soup.find("meta", property="og:image")
+                    if img and "tgme_logo" not in img.get("content", ""):
+                        assets["photo"] = img.get("content")
 
-            # --- 2. YOUTUBE ---
+            # --- YOUTUBE / X / TIKTOK ---
             elif any(x in target for x in ["youtube.com", "youtu.be"]):
-                match = re.search(r'(?:v=|youtu\.be/|embed/|shorts/)([^&?#/ ]+)', target)
-                if match:
-                    v_id = match.group(1)
+                y_match = re.search(r'(?:v=|youtu\.be/|embed/|shorts/)([^&?#/ ]+)', target)
+                if y_match:
+                    v_id = y_match.group(1)
                     assets["video"] = f"https://www.youtube.com/embed/{v_id}"
                     assets["photo"] = f"https://img.youtube.com/vi/{v_id}/maxresdefault.jpg"
 
-            # --- 3. TIKTOK ---
-            elif "tiktok.com" in target:
-                match = re.search(r'video/(\d+)', target)
-                if match:
-                    assets["video"] = f"https://www.tiktok.com/embed/v2/{match.group(1)}"
-                    res = await client.get(f"https://www.tiktok.com/oembed?url={urllib.parse.quote(target)}", timeout=5.0)
-                    if res.status_code == 200:
-                        assets["photo"] = res.json().get("thumbnail_url")
-
-            # --- 4. X / TWITTER ---
-            elif any(d in target for d in ["x.com", "twitter.com"]):
-                match = re.search(r'status/(\d+)', target)
-                if match:
-                    t_id = match.group(1)
-                    assets["video"] = f"https://platform.twitter.com/embed/Tweet.html?id={t_id}"
-                    assets["photo"] = f"https://vxtwitter.com/i/status/{t_id}.jpg"
-
-            # --- 5. OMNI-NEWS / GENERAL ---
+            # --- GENERAL NEWS (BS4 TYPEERROR FIX) ---
             else:
                 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0"}
                 async with client.stream("GET", target, headers=headers, follow_redirects=True, timeout=10.0) as resp:
@@ -288,31 +268,25 @@ class VisionSphereV18_5:
                         buffer = bytearray()
                         async for chunk in resp.aiter_bytes(chunk_size=4096):
                             buffer.extend(chunk)
-                            if len(buffer) > 32768: break # Read 32KB
+                            if len(buffer) > 32768: break # Cap at 32KB
                         
-                        # 🔥 THE BS4 TYPEERROR FIX: Explicitly decode to string
-                        decoded_html = buffer.decode('utf-8', errors='replace')
-                        soup = BeautifulSoup(decoded_html, "html.parser")
+                        # 🔥 CRITICAL FIX: Decode to string so BS4 doesn't crash on Python 3.14
+                        html_str = buffer.decode('utf-8', errors='replace')
+                        soup = BeautifulSoup(html_str, "html.parser")
                         
-                        # Image Search
                         img = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
                         if img: assets["photo"] = img.get("content")
                         
-                        # Video Search
                         vid = soup.find("meta", property="og:video:secure_url") or soup.find("meta", property="og:video")
                         if vid: assets["video"] = vid.get("content")
 
         except Exception as e:
-            print(f"💥 [STAGE_2_FATAL]: {str(e)}")
-            print(traceback.format_exc())
+            print(f"💥 [MEDIA_FATAL]: {str(e)}")
 
-        # ==========================================
-        #   STAGE 3: SANITIZATION
-        # ==========================================
+        # Final Cleanup
         for k in ["video", "photo"]:
             if assets[k]:
-                # Fix JSON escapes and relative paths
-                assets[k] = assets[k].replace('\\/', '/').replace('\\u002F', '/').replace('&amp;', '&')
+                assets[k] = assets[k].replace('\\/', '/').replace('&amp;', '&')
                 if assets[k].startswith('//'): assets[k] = 'https:' + assets[k]
 
         return assets
