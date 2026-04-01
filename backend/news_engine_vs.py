@@ -11,8 +11,9 @@ from datetime import datetime, timezone
 import time
 import logging
 import re
-#from googlenewsdecoder import gnewsdecoder
-import googlenewsdecoder
+from googlenewsdecoder import gnewsdecoder
+#import googlenewsdecoder
+from unittest import mock
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import base64
@@ -175,54 +176,42 @@ class VisionSphereV18_5:
 
     async def extract_media(self, client, url):
         """
-        V60 THE MASKED DECODER:
-        - Uses 'googlenewsdecoder' library logic.
-        - MASKS all network calls by rerouting them through Cloudflare.
-        - No 429 errors because Google sees Cloudflare's IP.
+        V61 GHOST PROTOCOL:
+        - Uses the 'googlenewsdecoder' library as requested.
+        - MASKS requests by hijacking 'requests.Session.request' globally.
+        - Routes library traffic through the Cloudflare Tunnel.
         """
         assets = {"video": None, "photo": None, "real_url": url}
         BRIDGE_URL = "https://extractor.vision-sphere-3d.workers.dev"
         
-        print(f"\n🎭 [MASKED_V60] Initializing for: {url[:50]}...")
+        print(f"\n👻 [GHOST_START] Decoding: {url[:50]}...")
 
-        # ==========================================
-        #   STAGE 1: THE MASKED LIBRARY DECODE
-        # ==========================================
         if "news.google.com" in url:
             try:
-                print("📡 [DEBUG] Masking googlenewsdecoder network calls...")
-                
-                # Since the library is synchronous and makes its own requests, 
-                # we manually resolve the first layer via Cloudflare to give the 
-                # library a 'warm' start, or we let the library do the work 
-                # via a proxied request.
-                
-                # PURE MASKING: We fetch the decoded URL via the Worker bridge
-                # which performs the 'googlenewsdecoder' logic on the edge or 
-                # simply follows the complex redirect chain safely.
-                resp = await client.get(f"{BRIDGE_URL}/?url={url}", timeout=15.0)
-                
-                if resp.status_code == 200:
-                    # If the Worker followed the redirect, X-Final-URL is our target
-                    assets["real_url"] = resp.headers.get("X-Final-URL", url)
-                    
-                    # Double-check: If still on Google, we use the library on the result
-                    if "news.google.com" in assets["real_url"]:
-                        print("🛠️ [DEBUG] Worker landed on Google, applying library logic...")
-                        # We run the library in a thread to keep it async
-                        loop = asyncio.get_event_loop()
-                        # The library's internal calls will still be Render-IP based 
-                        # UNLESS we use this bridge result.
-                        decoded = await loop.run_in_executor(None, googlenewsdecoder.new_decoderv2, url)
-                        if decoded.get("status"):
-                            assets["real_url"] = decoded["decoded_url"]
+                # --- THE HIJACK LOGIC ---
+                original_request = requests.Session.request
 
-                    print(f"✅ [MASK_SUCCESS] Real URL: {assets['real_url'][:60]}")
-                else:
-                    print(f"❌ [MASK_FAIL] Status {resp.status_code}")
+                def masked_request(self_session, method, target_url, **kwargs):
+                    # Reroute the library's internal call to our Worker
+                    tunnel_url = f"{BRIDGE_URL}/?url={target_url}"
+                    print(f"🎭 [HIJACK] Masking library call: {target_url[:40]} -> Cloudflare")
+                    return original_request(self_session, method, tunnel_url, **kwargs)
+
+                # Patch the requests library ONLY during this call
+                with mock.patch('requests.Session.request', masked_request):
+                    print("📡 [DEBUG] Invoking library with hijacked network...")
+                    loop = asyncio.get_event_loop()
+                    # Use the correct function: gnewsdecoder
+                    decoded = await loop.run_in_executor(None, gnewsdecoder, url)
+                    
+                    if decoded:
+                        assets["real_url"] = decoded
+                        print(f"✅ [DECODER_OK] Library returned: {assets['real_url'][:60]}...")
+                    else:
+                        print("⚠️ [DECODER_WARN] Library returned empty result.")
 
             except Exception as e:
-                print(f"💥 [DECODER_CRASH] {str(e)}")
+                print(f"💥 [DECODER_CRASH] Fix: {str(e)}")
 
         # ==========================================
         #   STAGE 2: PLATFORM-SPECIFIC EXTRACTION
