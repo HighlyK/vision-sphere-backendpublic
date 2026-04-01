@@ -178,97 +178,130 @@ class VisionSphereV18_5:
 
     async def extract_media(self, client, url):
         """
-        V71 EDGE-BREAKER:
-        - Zero-Library Logic: Deletes googlenewsdecoder.
-        - Edge-Side Decoding: Offloads 429-sensitive work to Cloudflare Native JS.
-        - Mobile Identity: Spoofs high-authority mobile headers for final scraping.
+        V72 GHOST-PROTOCOL:
+        - Zero-Library: googlenewsdecoder removed.
+        - Cloudflare Native: Uses V66 Worker for BatchExecute handshakes.
+        - Anti-Fail: Strict validation to prevent scraping Google-owned dead ends.
         """
         start_time = time.time()
         assets = {"video": None, "photo": None, "real_url": url}
         BRIDGE_URL = "https://extractor.vision-sphere-3d.workers.dev"
         
-        print(f"\n⚡ [V71_EDGE_START] Target: {url[:55]}...")
+        print(f"\n👻 [V72_GHOST] Initializing: {url[:55]}...")
 
         # ==========================================
-        #   STAGE 1: NATIVE EDGE DECODE
+        #   STAGE 1: EDGE API DECODE (The Shield)
         # ==========================================
         if "news.google.com" in url:
             try:
-                # Hit the Worker to let Cloudflare's backbone handle the redirect
+                print("📡 [DEBUG] Calling Edge API for BatchExecute handshake...")
+                # We pass the URL to our private Cloudflare "Groq-style" Decoder
                 resp = await client.get(f"{BRIDGE_URL}/?url={url}", timeout=10.0)
                 
                 if resp.status_code == 200:
                     data = resp.json()
-                    if data.get("status"):
+                    if data.get("status") and "news.google.com" not in data.get("decoded_url", ""):
                         assets["real_url"] = data["decoded_url"]
-                        print(f"🎯 [EDGE_HIT] Decoded: {assets['real_url'][:60]}")
+                        method = data.get("method", "unknown")
+                        print(f"🎯 [EDGE_HIT] Success ({method}): {assets['real_url'][:60]}")
                     else:
-                        print("⚠️ [EDGE_MISS] Worker couldn't find redirect. Proceeding with original.")
+                        print("⚠️ [EDGE_MISS] Worker returned original or invalid URL. Aborting.")
+                        return assets # Stop early to avoid hitting Google from Render
                 elif resp.status_code == 429:
-                    print("🚫 [RATE_LIMIT] Cloudflare range flagged by Google. Change Worker URL.")
+                    print("🚫 [RATE_LIMIT] Cloudflare Worker is flagged. IP range rotation needed.")
                     return assets
+                else:
+                    print(f"❌ [API_FAIL] Worker returned status: {resp.status_code}")
+                    return assets
+
             except Exception as e:
-                print(f"💥 [DECODE_CRASH] {str(e)}")
+                print(f"💥 [DECODE_CRASH] Edge API error: {str(e)}")
+                return assets
 
         # ==========================================
-        #   STAGE 2: MULTI-PLATFORM EXTRACTION
+        #   STAGE 2: PRECISION EXTRACTION
         # ==========================================
         target = assets.get("real_url")
+        
+        # Final Safety Check: Never hit news.google.com from Render IP
         if not target or "news.google.com" in target:
+            print("🛑 [SAFETY] Aborting: Target URL is still a Google News link.")
             return assets
 
+        print(f"🔎 [SCRAPE] Accessing real source: {target[:60]}")
+
         try:
-            # Use a high-authority Mobile UA for the final scrape
-            headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"}
+            # High-Authority Mobile Identity (Spoofs iPhone Safari)
+            headers = {
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            }
             
-            # Optimized for speed: use stream to avoid loading huge HTML files into memory
+            # Use stream to handle potentially large news pages efficiently
             async with client.stream("GET", target, headers=headers, follow_redirects=True, timeout=12.0) as resp:
                 if resp.status_code == 200:
-                    buffer = await resp.aread()
-                    soup = BeautifulSoup(buffer.decode('utf-8', errors='replace'), "html.parser")
+                    # Read only what we need
+                    content = await resp.aread()
+                    soup = BeautifulSoup(content.decode('utf-8', errors='replace'), "html.parser")
                     
                     # --- TELEGRAM ---
                     if "t.me" in target:
-                        img = soup.find("meta", property="og:image")
-                        if img: assets["photo"] = img.get("content")
+                        print("📨 [DEBUG] Using Telegram parser...")
+                        meta_img = soup.find("meta", property="og:image")
+                        if meta_img: assets["photo"] = meta_img.get("content")
+                        # Check if it's a specific message link for video embed
                         if "/s/" not in target and re.search(r'/\d+$', target):
                             assets["video"] = f"{target}?embed=1"
 
                     # --- TIKTOK ---
                     elif "tiktok.com" in target:
-                        img = soup.find("meta", property="og:image")
-                        if img: assets["photo"] = img.get("content")
+                        print("🎵 [DEBUG] Using TikTok parser...")
+                        meta_img = soup.find("meta", property="og:image")
+                        if meta_img: assets["photo"] = meta_img.get("content")
                         t_match = re.search(r'video/(\d+)', target)
                         if t_match: assets["video"] = f"https://www.tiktok.com/embed/v2/{t_match.group(1)}"
 
-                    # --- X / TWITTER ---
+                    # --- X (TWITTER) ---
                     elif any(d in target for d in ["x.com", "twitter.com"]):
-                        img = soup.find("meta", property="og:image")
-                        if img: assets["photo"] = img.get("content")
+                        print("🐦 [DEBUG] Using X.com parser...")
+                        meta_img = soup.find("meta", property="og:image")
+                        if meta_img: assets["photo"] = meta_img.get("content")
                         x_match = re.search(r'status/(\d+)', target)
                         if x_match: assets["video"] = f"https://platform.twitter.com/embed/Tweet.html?id={x_match.group(1)}"
 
-                    # --- GENERAL ---
+                    # --- GENERAL NEWS SCRAPE ---
                     else:
-                        img = soup.find("meta", property=re.compile(r'og:image|twitter:image|thumbnail'))
-                        if img: assets["photo"] = img.get("content")
-                        vid = soup.find("meta", property=re.compile(r'og:video|og:video:url|twitter:player:stream'))
-                        if vid: assets["video"] = vid.get("content")
+                        # Look for the best possible image meta tags
+                        img_tag = soup.find("meta", property=re.compile(r'og:image|twitter:image|thumbnail')) or \
+                                soup.find("link", rel="image_src")
+                        if img_tag: 
+                            assets["photo"] = img_tag.get("content") or img_tag.get("href")
+                        
+                        # Look for video meta tags
+                        vid_tag = soup.find("meta", property=re.compile(r'og:video|og:video:url|twitter:player:stream'))
+                        if vid_tag:
+                            assets["video"] = vid_tag.get("content")
 
         except Exception as e:
             print(f"💥 [SCRAPE_ERROR] {type(e).__name__}: {str(e)}")
 
         # ==========================================
-        #   STAGE 3: CLEANUP & VALIDATION
+        #   STAGE 3: ASSET CLEANUP
         # ==========================================
         for k in ["video", "photo"]:
             if assets[k] and isinstance(assets[k], str):
-                cleaned = assets[k].replace('\\/', '/').replace('&amp;', '&')
-                if cleaned.startswith('//'): cleaned = 'https:' + cleaned
-                elif cleaned.startswith('/'): cleaned = urljoin(target, cleaned)
-                assets[k] = cleaned
+                # Remove escape slashes and HTML entities
+                clean_url = assets[k].replace('\\/', '/').replace('&amp;', '&')
+                # Fix relative/protocol-less URLs
+                if clean_url.startswith('//'): 
+                    clean_url = 'https:' + clean_url
+                elif clean_url.startswith('/') and not clean_url.startswith('//'): 
+                    clean_url = urljoin(target, clean_url)
+                assets[k] = clean_url
 
-        print(f"🏁 [V71_COMPLETE] Success: {bool(assets['photo'])} | Time: {time.time()-start_time:.1f}s\n")
+        duration = time.time() - start_time
+        print(f"🏁 [V72_COMPLETE] Found Photo: {bool(assets['photo'])} | Found Video: {bool(assets['video'])} | Time: {duration:.1f}s\n")
+        
         return assets
 
     async def llm_triage(self, client, raw_title):
