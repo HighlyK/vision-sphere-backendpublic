@@ -12,6 +12,7 @@ import time
 import logging
 import re
 from googlenewsdecoder import gnewsdecoder
+import requests
 #import googlenewsdecoder
 from unittest import mock
 from supabase import create_client, Client
