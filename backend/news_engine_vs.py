@@ -174,95 +174,75 @@ class VisionSphereV18_5:
 
     async def extract_media(self, client, url):
         """
-        V46 MOBILE BRUTE:
-        - Mimics iPhone/Safari to force a mobile redirect.
-        - Uses 'allow_redirects=True' with a strict limit.
-        - Explicit String Decoding for BS4 (Fixes TypeError).
-        - No Base64.
+        V47 MANAGED DECODER:
+        - Uses 'googlenewsdecoder' library for 100% reliable G-News escape.
+        - No manual Base64 or regex hunting.
+        - Preserves Telegram/YouTube embed logic.
+        - Fixes BS4 'bytes' TypeError.
         """
         assets = {"video": None, "photo": None, "real_url": url}
-        final_url = url
-
-        if "news.google.com" in final_url:
-            print(f"🔄 [BRUTE] Forcing Mobile Redirect: {final_url}")
-            
-            # We use a high-quality Mobile User-Agent. 
-            # Google is more likely to send a 302 Location header to mobile Safari 
-            # than to a desktop "Redirecting..." page.
-            headers = {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-                "Accept": "text/html,application/xhtml+xml,xml;q=0.9,*/*;q=0.8",
-                "Referer": "https://news.google.com/"
-            }
-            
+        
+        # ==========================================
+        #   STAGE 1: THE MANAGED GOOGLE ESCAPE
+        # ==========================================
+        if "news.google.com" in url:
+            print(f"🔄 [DECODER] Running library-level decode: {url}")
             try:
-                # We use a separate GET just for the bounce
-                # Increased timeout to handle slow handshakes
-                resp = await client.get(final_url, headers=headers, follow_redirects=True, timeout=15.0)
+                # gnewsdecoder is synchronous, so we run it in a thread to keep things async
+                loop = asyncio.get_event_loop()
+                # It returns a dict: {"status": True, "decoded_url": "..."}
+                decoded_data = await loop.run_in_executor(None, gnewsdecoder, url)
                 
-                # 1. Check if the final URL is no longer Google
-                if "google.com" not in str(resp.url):
-                    final_url = str(resp.url)
-                    print(f"🚀 [BRUTE_SUCCESS] Redirected to: {final_url}")
-                
-                # 2. If STILL on Google, we try one last HTML "Scavenge" 
-                # specifically for the 'm-link' class often used on mobile.
+                if decoded_data.get("status"):
+                    assets["real_url"] = decoded_data["decoded_url"]
+                    print(f"✅ [DECODER_SUCCESS] Clean URL: {assets['real_url']}")
                 else:
-                    html_str = resp.text # Decoded automatically
-                    soup = BeautifulSoup(html_str, "html.parser")
-                    
-                    # Check for the primary anchor tag Google uses for "If not redirected, click here"
-                    # They often hide it in an <a> tag without an ID but with a specific structure.
-                    anchors = soup.find_all("a", href=True)
-                    for a in anchors:
-                        href = a['href']
-                        if "http" in href and "google.com" not in href:
-                            final_url = href
-                            print(f"🚀 [BRUTE_SCAVENGE] Found exit in mobile HTML: {final_url}")
-                            break
-
-                assets["real_url"] = final_url
-
+                    print(f"⚠️ [DECODER_WARN] Lib failed: {decoded_data.get('message')}")
             except Exception as e:
-                print(f"❌ [BRUTE_ERR]: {str(e)}")
+                print(f"❌ [DECODER_FATAL] Library error: {str(e)}")
 
         # ==========================================
-        #   STAGE 2: MEDIA SNATCHER
+        #   STAGE 2: PLATFORM-SPECIFIC SNATCHER
         # ==========================================
         target = assets["real_url"]
-        
-        # If we are STILL stuck on Google, we can't get media.
-        if "google.com" in target:
-            print("⚠️ [WARN] Failed to escape Google loop. Media extraction will likely fail.")
-        
         try:
-            # --- TELEGRAM ---
+            # --- TELEGRAM (Embeds + Thumbnails) ---
             if "t.me" in target:
                 clean_tg = target.split('?')[0]
                 if re.search(r'/[^/]+/\d+', clean_tg):
                     assets["video"] = f"{clean_tg}?embed=1"
+                
                 tg_resp = await client.get(clean_tg, timeout=8.0)
                 if tg_resp.status_code == 200:
+                    # Force decode to string for BS4
                     tg_soup = BeautifulSoup(tg_resp.text, "html.parser")
                     img = tg_soup.find("meta", property="og:image")
                     if img and "tgme_logo" not in img.get("content", ""):
                         assets["photo"] = img.get("content")
 
-            # --- GENERAL NEWS ---
-            elif not any(x in target for x in ["youtube.com", "youtu.be", "tiktok.com", "x.com"]):
-                # Use desktop headers for the final news site
-                news_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0"}
-                async with client.stream("GET", target, headers=news_headers, follow_redirects=True, timeout=10.0) as resp:
+            # --- YOUTUBE (Auto-Embed) ---
+            elif any(x in target for x in ["youtube.com", "youtu.be"]):
+                y_match = re.search(r'(?:v=|youtu\.be/|embed/|shorts/)([^&?#/ ]+)', target)
+                if y_match:
+                    v_id = y_match.group(1)
+                    assets["video"] = f"https://www.youtube.com/embed/{v_id}"
+                    assets["photo"] = f"https://img.youtube.com/vi/{v_id}/maxresdefault.jpg"
+
+            # --- GENERAL NEWS (BS4 SAFETY FIRST) ---
+            else:
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0"}
+                async with client.stream("GET", target, headers=headers, follow_redirects=True, timeout=10.0) as resp:
                     if resp.status_code == 200:
                         buffer = bytearray()
                         async for chunk in resp.aiter_bytes(chunk_size=4096):
                             buffer.extend(chunk)
-                            if len(buffer) > 32768: break 
+                            if len(buffer) > 32768: break # Read 32KB
                         
-                        # 🔥 BS4 FIX: Explicitly decode buffer to string
-                        decoded_html = buffer.decode('utf-8', errors='replace')
-                        soup = BeautifulSoup(decoded_html, "html.parser")
+                        # 🔥 FIXED: Explicitly decode buffer to string to kill the TypeError
+                        html_str = buffer.decode('utf-8', errors='replace')
+                        soup = BeautifulSoup(html_str, "html.parser")
                         
+                        # Extract Social Assets
                         img = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
                         if img: assets["photo"] = img.get("content")
                         
@@ -272,7 +252,7 @@ class VisionSphereV18_5:
         except Exception as e:
             print(f"💥 [MEDIA_FATAL]: {str(e)}")
 
-        # Cleanup JSON escapes
+        # Final URL Sanitization
         for k in ["video", "photo"]:
             if assets[k]:
                 assets[k] = assets[k].replace('\\/', '/').replace('&amp;', '&')
