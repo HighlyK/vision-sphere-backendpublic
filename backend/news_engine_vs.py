@@ -174,71 +174,67 @@ class VisionSphereV18_5:
 
     async def extract_media(self, client, url):
         """
-        V45 TROJAN HORSE:
-        - Kills the Google News 'Refresh' Loop.
-        - Uses 'Googlebot' impersonation to force a direct link.
-        - Maintains zero-base64 and explicit string decoding.
+        V46 MOBILE BRUTE:
+        - Mimics iPhone/Safari to force a mobile redirect.
+        - Uses 'allow_redirects=True' with a strict limit.
+        - Explicit String Decoding for BS4 (Fixes TypeError).
+        - No Base64.
         """
         assets = {"video": None, "photo": None, "real_url": url}
         final_url = url
 
         if "news.google.com" in final_url:
-            print(f"🔄 [TROJAN] Forcing Google News to drop the mask: {final_url}")
+            print(f"🔄 [BRUTE] Forcing Mobile Redirect: {final_url}")
             
-            # We switch to a Bot User-Agent. 
-            # Often, Google News will bypass the 'Redirecting...' JS page for crawlers.
+            # We use a high-quality Mobile User-Agent. 
+            # Google is more likely to send a 302 Location header to mobile Safari 
+            # than to a desktop "Redirecting..." page.
             headers = {
-                "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
                 "Accept": "text/html,application/xhtml+xml,xml;q=0.9,*/*;q=0.8",
                 "Referer": "https://news.google.com/"
             }
             
             try:
-                # 1. Try a standard GET with bot headers
-                resp = await client.get(final_url, headers=headers, follow_redirects=True, timeout=12.0)
+                # We use a separate GET just for the bounce
+                # Increased timeout to handle slow handshakes
+                resp = await client.get(final_url, headers=headers, follow_redirects=True, timeout=15.0)
                 
-                # 2. Check if we moved. If not, we scrape the HTML differently.
-                page_text = resp.text 
+                # 1. Check if the final URL is no longer Google
+                if "google.com" not in str(resp.url):
+                    final_url = str(resp.url)
+                    print(f"🚀 [BRUTE_SUCCESS] Redirected to: {final_url}")
                 
-                # Google's 'Redirecting' page usually has an <a> tag with class 'm-link' 
-                # or a simple 'url=' inside a script.
-                # We look for the FIRST link that IS NOT google.com.
-                soup = BeautifulSoup(page_text, "html.parser")
-                
-                # Look for ANY link that doesn't point back to google
-                possible_exits = []
-                for a in soup.find_all("a", href=True):
-                    href = a['href']
-                    if "http" in href and "google.com" not in href and "gstatic.com" not in href:
-                        possible_exits.append(href)
-                
-                if possible_exits:
-                    # We take the longest one (usually the cleanest URL)
-                    final_url = max(possible_exits, key=len)
-                    print(f"🚀 [TROJAN_SUCCESS] Found exit link: {final_url}")
+                # 2. If STILL on Google, we try one last HTML "Scavenge" 
+                # specifically for the 'm-link' class often used on mobile.
                 else:
-                    # If that failed, search the raw text for a URL pattern
-                    # that is definitely not google.
-                    raw_links = re.findall(r'https?://[^\s"\'<>]+', page_text)
-                    exits = [l for l in raw_links if "google.com" not in l and "gstatic.com" not in l]
-                    if exits:
-                        final_url = exits[0]
-                        print(f"🚀 [TROJAN_SCAVENGE] Extracted from raw text: {final_url}")
-
-                # Verification: If we are STILL on google, the URL is likely obfuscated 
-                # and requires the very Base64 logic you want to avoid.
-                if "google.com" in final_url:
-                    print("❌ [TROJAN_FAIL] Google won't budge. Proceeding with original URL.")
+                    html_str = resp.text # Decoded automatically
+                    soup = BeautifulSoup(html_str, "html.parser")
+                    
+                    # Check for the primary anchor tag Google uses for "If not redirected, click here"
+                    # They often hide it in an <a> tag without an ID but with a specific structure.
+                    anchors = soup.find_all("a", href=True)
+                    for a in anchors:
+                        href = a['href']
+                        if "http" in href and "google.com" not in href:
+                            final_url = href
+                            print(f"🚀 [BRUTE_SCAVENGE] Found exit in mobile HTML: {final_url}")
+                            break
 
                 assets["real_url"] = final_url
 
             except Exception as e:
-                print(f"❌ [TROJAN_ERR]: {str(e)}")
+                print(f"❌ [BRUTE_ERR]: {str(e)}")
 
         # ==========================================
-        #   STAGE 2: MEDIA SNATCHER (Standard V44 logic)
+        #   STAGE 2: MEDIA SNATCHER
         # ==========================================
         target = assets["real_url"]
+        
+        # If we are STILL stuck on Google, we can't get media.
+        if "google.com" in target:
+            print("⚠️ [WARN] Failed to escape Google loop. Media extraction will likely fail.")
+        
         try:
             # --- TELEGRAM ---
             if "t.me" in target:
@@ -254,23 +250,33 @@ class VisionSphereV18_5:
 
             # --- GENERAL NEWS ---
             elif not any(x in target for x in ["youtube.com", "youtu.be", "tiktok.com", "x.com"]):
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0"}
-                async with client.stream("GET", target, headers=headers, follow_redirects=True, timeout=10.0) as resp:
+                # Use desktop headers for the final news site
+                news_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0"}
+                async with client.stream("GET", target, headers=news_headers, follow_redirects=True, timeout=10.0) as resp:
                     if resp.status_code == 200:
                         buffer = bytearray()
                         async for chunk in resp.aiter_bytes(chunk_size=4096):
                             buffer.extend(chunk)
                             if len(buffer) > 32768: break 
                         
-                        html_str = buffer.decode('utf-8', errors='replace')
-                        soup = BeautifulSoup(html_str, "html.parser")
+                        # 🔥 BS4 FIX: Explicitly decode buffer to string
+                        decoded_html = buffer.decode('utf-8', errors='replace')
+                        soup = BeautifulSoup(decoded_html, "html.parser")
+                        
                         img = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
                         if img: assets["photo"] = img.get("content")
+                        
                         vid = soup.find("meta", property="og:video:secure_url") or soup.find("meta", property="og:video")
                         if vid: assets["video"] = vid.get("content")
 
         except Exception as e:
             print(f"💥 [MEDIA_FATAL]: {str(e)}")
+
+        # Cleanup JSON escapes
+        for k in ["video", "photo"]:
+            if assets[k]:
+                assets[k] = assets[k].replace('\\/', '/').replace('&amp;', '&')
+                if assets[k].startswith('//'): assets[k] = 'https:' + assets[k]
 
         return assets
 
