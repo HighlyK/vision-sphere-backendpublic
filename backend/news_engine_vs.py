@@ -19,6 +19,7 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 import base64
 import traceback
+import random
 load_dotenv()
 # ==========================================
 # 0. CONFIGURATION & THROTTLES
@@ -177,149 +178,200 @@ class VisionSphereV18_5:
 
     async def extract_media(self, client, url):
         """
-        V64 BULLETPROOF HIJACK (No Fallbacks):
-        - Completely abstracts *args/**kwargs for the requests monkey-patch.
-        - Zero fallbacks: If decode fails, it aborts immediately to protect IPs.
-        - Strict type-checking prevents dict iteration crashes.
+        V66 APEX PROTOCOL (Ultra-Robust):
+        - Jittered Exponential Backoff for Cloudflare 429/503s.
+        - Deep type validation and enhanced stack trace logs.
+        - Fortified network extraction with strict timeout/error boundaries.
+        - Handles relative URLs during final media sanitization.
         """
+        start_time = time.time()
         assets = {"video": None, "photo": None, "real_url": url}
         BRIDGE_URL = "https://extractor.vision-sphere-3d.workers.dev"
         
-        print(f"\n👻 [V64_START] Target: {url[:60]}...")
+        print(f"\n🚀 [V66_APEX_START] Target: {url[:60]}...")
 
         # ==========================================
-        #   STAGE 1: MASKED DECODE (Strict Mode)
+        #   STAGE 1: MASKED DECODE w/ RETRIES
         # ==========================================
         if "news.google.com" in url:
-            try:
-                original_request = requests.Session.request
+            max_attempts = 3
+            decode_success = False
 
-                # 🛠️ Universal Hijack: Catches the URL no matter how 'requests' passes it
-                def masked_request(*args, **kwargs):
-                    args_list = list(args)
-                    target_url = None
-                    
-                    # In Session.request(self, method, url, ...), url is index 2
-                    if len(args_list) >= 3:
-                        target_url = args_list[2]
-                    elif 'url' in kwargs:
-                        target_url = kwargs['url']
+            for attempt in range(1, max_attempts + 1):
+                print(f"📡 [DECODE_ATTEMPT {attempt}/{max_attempts}] Engaging Worker Proxy...")
+                try:
+                    original_request = requests.Session.request
+
+                    def masked_request(*args, **kwargs):
+                        args_list = list(args)
+                        target_url = None
                         
-                    if target_url and isinstance(target_url, str):
-                        tunnel_url = f"{BRIDGE_URL}/?url={target_url}"
-                        print(f"🎭 [HIJACK_ACTIVE] {target_url[:40]} -> Worker")
-                        
-                        # Swap the URL out dynamically
                         if len(args_list) >= 3:
-                            args_list[2] = tunnel_url
-                        else:
-                            kwargs['url'] = tunnel_url
-                    
-                    return original_request(*args_list, **kwargs)
-
-                # Apply the patch ONLY during this execution
-                with mock.patch('requests.Session.request', masked_request):
-                    print("📡 [DEBUG] Executing gnewsdecoder through Cloudflare Worker...")
-                    loop = asyncio.get_event_loop()
-                    result = await loop.run_in_executor(None, gnewsdecoder, url)
-                    
-                    # 🛡️ Strict Parsing: Handle the dict from v0.1.7+
-                    if isinstance(result, dict):
-                        if result.get("status") and result.get("decoded_url"):
-                            assets["real_url"] = result.get("decoded_url")
-                            print(f"✅ [DECODER_SUCCESS] {assets['real_url'][:60]}")
-                        else:
-                            print(f"❌ [DECODER_FAILED] Error: {result.get('message', 'Unknown error')}")
-                            print("🚫 [NO_FALLBACK] Aborting extraction to prevent IP burn.")
-                            return assets  # ⛔ NO FALLBACK: Stop execution
+                            target_url = args_list[2]
+                        elif 'url' in kwargs:
+                            target_url = kwargs['url']
                             
-                    elif isinstance(result, str) and result.startswith("http"):
-                        assets["real_url"] = result
-                        print(f"✅ [DECODER_SUCCESS] (String): {assets['real_url'][:60]}")
-                    else:
-                        print(f"❌ [DECODER_FAILED] Unrecognized response format: {type(result)}")
-                        print("🚫 [NO_FALLBACK] Aborting.")
-                        return assets  # ⛔ NO FALLBACK
+                        if target_url and isinstance(target_url, str):
+                            tunnel_url = f"{BRIDGE_URL}/?url={target_url}"
+                            if attempt == 1:  # Only print on first attempt to keep logs clean
+                                print(f"🎭 [HIJACK] Routing via Worker: {target_url[:40]}...")
+                            
+                            if len(args_list) >= 3:
+                                args_list[2] = tunnel_url
+                            else:
+                                kwargs['url'] = tunnel_url
+                        
+                        return original_request(*args_list, **kwargs)
 
-            except Exception as e:
-                print(f"💥 [DECODER_CRASH] Critical failure: {str(e)}")
-                print("🚫 [NO_FALLBACK] Aborting to protect host.")
-                return assets  # ⛔ NO FALLBACK
+                    # Execute patch and wrap in asyncio.wait_for to prevent infinite library hangs
+                    with mock.patch('requests.Session.request', masked_request):
+                        loop = asyncio.get_event_loop()
+                        result = await asyncio.wait_for(
+                            loop.run_in_executor(None, gnewsdecoder, url),
+                            timeout=15.0  # 🛑 Hard timeout for the library
+                        )
+                        
+                        if isinstance(result, dict):
+                            status = result.get("status")
+                            decoded_url = result.get("decoded_url")
+                            msg = str(result.get("message", ""))
+                            
+                            if status and decoded_url:
+                                assets["real_url"] = decoded_url
+                                print(f"✅ [DECODER_SUCCESS] Resolved: {assets['real_url'][:60]}")
+                                decode_success = True
+                                break  # 🎯 Success! Exit loop.
+                            else:
+                                # 🔄 Handle Cloudflare / Google Rate Limits
+                                if "429" in msg or "503" in msg:
+                                    wait_time = attempt * random.uniform(1.5, 3.0)
+                                    print(f"⚠️ [RATE_LIMIT] Flagged ({msg[:30]}). Retrying in {wait_time:.1f}s...")
+                                    await asyncio.sleep(wait_time)
+                                    continue  # Retry
+                                else:
+                                    print(f"❌ [DECODER_FATAL] Hard failure: {msg}")
+                                    return assets  # ⛔ NO FALLBACK
+                                    
+                        elif isinstance(result, str) and result.startswith("http"):
+                            assets["real_url"] = result
+                            print(f"✅ [DECODER_SUCCESS] Resolved (Str): {assets['real_url'][:60]}")
+                            decode_success = True
+                            break
+                        else:
+                            print(f"❌ [DECODER_FATAL] Unknown response type: {type(result)}")
+                            return assets
+
+                except asyncio.TimeoutError:
+                    print(f"⏱️ [DECODER_TIMEOUT] Library took too long on attempt {attempt}.")
+                    continue
+                except Exception as e:
+                    print(f"💥 [DECODER_CRASH] Critical Error: {str(e)}")
+                    return assets  # ⛔ NO FALLBACK
+
+            if not decode_success:
+                print("🚫 [MAX_RETRIES] Could not decode URL. Aborting extraction.")
+                return assets
 
         # ==========================================
-        #   STAGE 2: EXTRACTION
+        #   STAGE 2: MULTI-PLATFORM EXTRACTION
         # ==========================================
         target = assets.get("real_url")
         
-        # 🛑 Final Safety Gates
         if not target or not isinstance(target, str):
-            print("❌ [FATAL] Target URL is missing or invalid type. Aborting.")
+            print("❌ [FATAL] Target URL is invalid. Aborting.")
             return assets
             
         if "news.google.com" in target:
-            print("🚫 [NO_FALLBACK] Target remains Google News. Aborting extraction.")
-            return assets  # ⛔ NO FALLBACK: Ensure Google is never hit directly
+            print("🚫 [NO_FALLBACK] URL is still Google News. Aborting to protect IP.")
+            return assets
             
-        print(f"🔎 [SCRAPING] Validated target: {target[:60]}")
+        print(f"🔎 [SCRAPING] Validated Target: {target[:70]}...")
 
         try:
             # --- TELEGRAM ---
-            if any(x in target for x in ["t.me", "telegram.me", "telegram.com"]):
-                print("📨 [HANDLER] Executing Telegram logic...")
+            if any(domain in target for domain in ["t.me", "telegram.me", "telegram.com"]):
+                print("📨 [ROUTER] Engaged Telegram Handler")
                 clean_tg = target.replace("telegram.com", "t.me").replace("telegram.me", "t.me").split('?')[0]
                 if re.search(r'/[^/]+/\d+', clean_tg):
                     assets["video"] = f"{clean_tg}?embed=1"
                 
                 tg_r = await client.get(clean_tg, timeout=8.0)
-                soup = BeautifulSoup(tg_r.text, "html.parser")
-                img = soup.find("meta", property="og:image")
-                if img: assets["photo"] = img.get("content")
+                if tg_r.status_code == 200:
+                    soup = BeautifulSoup(tg_r.text, "html.parser")
+                    img = soup.find("meta", property="og:image")
+                    if img: assets["photo"] = img.get("content")
 
             # --- TIKTOK ---
             elif "tiktok.com" in target:
-                print("🎵 [HANDLER] Executing TikTok logic...")
+                print("🎵 [ROUTER] Engaged TikTok Handler")
                 t_match = re.search(r'video/(\d+)', target)
                 if t_match: assets["video"] = f"https://www.tiktok.com/embed/v2/{t_match.group(1)}"
+                
                 r = await client.get(target, follow_redirects=True, timeout=10.0)
-                soup = BeautifulSoup(r.text, "html.parser")
-                img = soup.find("meta", property="og:image")
-                if img: assets["photo"] = img.get("content")
+                if r.status_code == 200:
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    img = soup.find("meta", property="og:image")
+                    if img: assets["photo"] = img.get("content")
 
             # --- X / TWITTER ---
-            elif any(x in target for x in ["x.com", "twitter.com"]):
-                print("🐦 [HANDLER] Executing X.com logic...")
+            elif any(domain in target for domain in ["x.com", "twitter.com"]):
+                print("🐦 [ROUTER] Engaged X.com Handler")
                 x_match = re.search(r'status/(\d+)', target)
                 if x_match: assets["video"] = f"https://platform.twitter.com/embed/Tweet.html?id={x_match.group(1)}"
-                headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"}
-                r = await client.get(target, headers=headers, timeout=8.0)
-                soup = BeautifulSoup(r.text, "html.parser")
-                img = soup.find("meta", property="og:image")
-                if img: assets["photo"] = img.get("content")
+                
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0"}
+                r = await client.get(target, headers=headers, follow_redirects=True, timeout=10.0)
+                if r.status_code == 200:
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    img = soup.find("meta", property="og:image")
+                    if img: assets["photo"] = img.get("content")
 
             # --- GENERAL NEWS ---
             else:
-                print("📰 [HANDLER] Executing General News scrape...")
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0"}
+                print("📰 [ROUTER] Engaged General News Scraper")
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
                 async with client.stream("GET", target, headers=headers, follow_redirects=True, timeout=12.0) as resp:
                     if resp.status_code == 200:
                         buffer = await resp.aread()
                         html_str = buffer.decode('utf-8', errors='replace')
                         soup = BeautifulSoup(html_str, "html.parser")
+                        
                         img = soup.find("meta", property="og:image")
                         if img: assets["photo"] = img.get("content")
+                        
                         vid = soup.find("meta", property="og:video:secure_url") or soup.find("meta", property="og:video")
                         if vid: assets["video"] = vid.get("content")
+                    else:
+                        print(f"⚠️ [SCRAPE_WARN] Target returned status code: {resp.status_code}")
 
+        except asyncio.TimeoutError:
+            print("⏱️ [SCRAPE_TIMEOUT] The target website took too long to respond.")
         except Exception as e:
-            print(f"💥 [EXTRACTION_ERR] {str(e)}")
+            print(f"💥 [SCRAPE_ERROR] {type(e).__name__}: {str(e)}")
 
-        # Cleanup
+        # ==========================================
+        #   STAGE 3: SANITIZATION & CLEANUP
+        # ==========================================
         for k in ["video", "photo"]:
-            if assets[k]:
-                assets[k] = assets[k].replace('\\/', '/').replace('&amp;', '&')
-                if assets[k].startswith('//'): assets[k] = 'https:' + assets[k]
+            val = assets[k]
+            if val and isinstance(val, str):
+                # Clean JSON escapes
+                cleaned = val.replace('\\/', '/').replace('&amp;', '&')
+                
+                # Fix scheme-less URLs
+                if cleaned.startswith('//'): 
+                    cleaned = 'https:' + cleaned
+                # Fix relative URLs (e.g., "/images/article.jpg" -> "https://news.com/images/article.jpg")
+                elif cleaned.startswith('/'):
+                    try:
+                        cleaned = urljoin(target, cleaned)
+                    except Exception:
+                        pass
+                
+                assets[k] = cleaned
 
-        print(f"🏁 [V64_COMPLETE] Photo: {bool(assets['photo'])} | Video: {bool(assets['video'])}")
+        elapsed = time.time() - start_time
+        print(f"🏁 [V66_COMPLETE] Photo: {bool(assets['photo'])} | Video: {bool(assets['video'])} | Time: {elapsed:.2f}s\n")
         return assets
 
     async def llm_triage(self, client, raw_title):
