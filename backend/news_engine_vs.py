@@ -177,102 +177,149 @@ class VisionSphereV18_5:
 
     async def extract_media(self, client, url):
         """
-        V61 GHOST PROTOCOL:
-        - Uses the 'googlenewsdecoder' library as requested.
-        - MASKS requests by hijacking 'requests.Session.request' globally.
-        - Routes library traffic through the Cloudflare Tunnel.
+        V64 BULLETPROOF HIJACK (No Fallbacks):
+        - Completely abstracts *args/**kwargs for the requests monkey-patch.
+        - Zero fallbacks: If decode fails, it aborts immediately to protect IPs.
+        - Strict type-checking prevents dict iteration crashes.
         """
         assets = {"video": None, "photo": None, "real_url": url}
         BRIDGE_URL = "https://extractor.vision-sphere-3d.workers.dev"
         
-        print(f"\n👻 [GHOST_START] Decoding: {url[:50]}...")
+        print(f"\n👻 [V64_START] Target: {url[:60]}...")
 
+        # ==========================================
+        #   STAGE 1: MASKED DECODE (Strict Mode)
+        # ==========================================
         if "news.google.com" in url:
             try:
-                # --- THE HIJACK LOGIC ---
                 original_request = requests.Session.request
 
-                def masked_request(self_session, method, target_url, **kwargs):
-                    # Reroute the library's internal call to our Worker
-                    tunnel_url = f"{BRIDGE_URL}/?url={target_url}"
-                    print(f"🎭 [HIJACK] Masking library call: {target_url[:40]} -> Cloudflare")
-                    return original_request(self_session, method, tunnel_url, **kwargs)
-
-                # Patch the requests library ONLY during this call
-                with mock.patch('requests.Session.request', masked_request):
-                    print("📡 [DEBUG] Invoking library with hijacked network...")
-                    loop = asyncio.get_event_loop()
-                    # Use the correct function: gnewsdecoder
-                    decoded = await loop.run_in_executor(None, gnewsdecoder, url)
+                # 🛠️ Universal Hijack: Catches the URL no matter how 'requests' passes it
+                def masked_request(*args, **kwargs):
+                    args_list = list(args)
+                    target_url = None
                     
-                    if decoded:
-                        assets["real_url"] = decoded
-                        print(f"✅ [DECODER_OK] Library returned: {assets['real_url'][:60]}...")
+                    # In Session.request(self, method, url, ...), url is index 2
+                    if len(args_list) >= 3:
+                        target_url = args_list[2]
+                    elif 'url' in kwargs:
+                        target_url = kwargs['url']
+                        
+                    if target_url and isinstance(target_url, str):
+                        tunnel_url = f"{BRIDGE_URL}/?url={target_url}"
+                        print(f"🎭 [HIJACK_ACTIVE] {target_url[:40]} -> Worker")
+                        
+                        # Swap the URL out dynamically
+                        if len(args_list) >= 3:
+                            args_list[2] = tunnel_url
+                        else:
+                            kwargs['url'] = tunnel_url
+                    
+                    return original_request(*args_list, **kwargs)
+
+                # Apply the patch ONLY during this execution
+                with mock.patch('requests.Session.request', masked_request):
+                    print("📡 [DEBUG] Executing gnewsdecoder through Cloudflare Worker...")
+                    loop = asyncio.get_event_loop()
+                    result = await loop.run_in_executor(None, gnewsdecoder, url)
+                    
+                    # 🛡️ Strict Parsing: Handle the dict from v0.1.7+
+                    if isinstance(result, dict):
+                        if result.get("status") and result.get("decoded_url"):
+                            assets["real_url"] = result.get("decoded_url")
+                            print(f"✅ [DECODER_SUCCESS] {assets['real_url'][:60]}")
+                        else:
+                            print(f"❌ [DECODER_FAILED] Error: {result.get('message', 'Unknown error')}")
+                            print("🚫 [NO_FALLBACK] Aborting extraction to prevent IP burn.")
+                            return assets  # ⛔ NO FALLBACK: Stop execution
+                            
+                    elif isinstance(result, str) and result.startswith("http"):
+                        assets["real_url"] = result
+                        print(f"✅ [DECODER_SUCCESS] (String): {assets['real_url'][:60]}")
                     else:
-                        print("⚠️ [DECODER_WARN] Library returned empty result.")
+                        print(f"❌ [DECODER_FAILED] Unrecognized response format: {type(result)}")
+                        print("🚫 [NO_FALLBACK] Aborting.")
+                        return assets  # ⛔ NO FALLBACK
 
             except Exception as e:
-                print(f"💥 [DECODER_CRASH] Fix: {str(e)}")
+                print(f"💥 [DECODER_CRASH] Critical failure: {str(e)}")
+                print("🚫 [NO_FALLBACK] Aborting to protect host.")
+                return assets  # ⛔ NO FALLBACK
 
         # ==========================================
-        #   STAGE 2: PLATFORM-SPECIFIC EXTRACTION
+        #   STAGE 2: EXTRACTION
         # ==========================================
-        target = assets["real_url"]
+        target = assets.get("real_url")
+        
+        # 🛑 Final Safety Gates
+        if not target or not isinstance(target, str):
+            print("❌ [FATAL] Target URL is missing or invalid type. Aborting.")
+            return assets
+            
+        if "news.google.com" in target:
+            print("🚫 [NO_FALLBACK] Target remains Google News. Aborting extraction.")
+            return assets  # ⛔ NO FALLBACK: Ensure Google is never hit directly
+            
+        print(f"🔎 [SCRAPING] Validated target: {target[:60]}")
+
         try:
-            # --- TELEGRAM / X / TIKTOK / YOUTUBE ---
-            # (Same optimized logic as before, using 'target' and explicit decoding)
+            # --- TELEGRAM ---
             if any(x in target for x in ["t.me", "telegram.me", "telegram.com"]):
+                print("📨 [HANDLER] Executing Telegram logic...")
                 clean_tg = target.replace("telegram.com", "t.me").replace("telegram.me", "t.me").split('?')[0]
                 if re.search(r'/[^/]+/\d+', clean_tg):
                     assets["video"] = f"{clean_tg}?embed=1"
                 
-                tg_r = await client.get(clean_tg, timeout=6.0)
+                tg_r = await client.get(clean_tg, timeout=8.0)
                 soup = BeautifulSoup(tg_r.text, "html.parser")
                 img = soup.find("meta", property="og:image")
                 if img: assets["photo"] = img.get("content")
 
+            # --- TIKTOK ---
             elif "tiktok.com" in target:
+                print("🎵 [HANDLER] Executing TikTok logic...")
                 t_match = re.search(r'video/(\d+)', target)
                 if t_match: assets["video"] = f"https://www.tiktok.com/embed/v2/{t_match.group(1)}"
-                r = await client.get(target, follow_redirects=True, timeout=8.0)
+                r = await client.get(target, follow_redirects=True, timeout=10.0)
                 soup = BeautifulSoup(r.text, "html.parser")
                 img = soup.find("meta", property="og:image")
                 if img: assets["photo"] = img.get("content")
 
+            # --- X / TWITTER ---
             elif any(x in target for x in ["x.com", "twitter.com"]):
+                print("🐦 [HANDLER] Executing X.com logic...")
                 x_match = re.search(r'status/(\d+)', target)
                 if x_match: assets["video"] = f"https://platform.twitter.com/embed/Tweet.html?id={x_match.group(1)}"
-                r = await client.get(target, headers={"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"}, timeout=8.0)
+                headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"}
+                r = await client.get(target, headers=headers, timeout=8.0)
                 soup = BeautifulSoup(r.text, "html.parser")
                 img = soup.find("meta", property="og:image")
                 if img: assets["photo"] = img.get("content")
 
-            elif any(x in target for x in ["youtube.com", "youtu.be"]):
-                y_match = re.search(r'(?:v=|be/|shorts/)([^&?#/ ]+)', target)
-                if y_match:
-                    v_id = y_match.group(1)
-                    assets["video"] = f"https://www.youtube.com/embed/{v_id}"
-                    assets["photo"] = f"https://img.youtube.com/vi/{v_id}/maxresdefault.jpg"
-
+            # --- GENERAL NEWS ---
             else:
-                # General News Scraper
-                async with client.stream("GET", target, follow_redirects=True, timeout=12.0) as resp:
+                print("📰 [HANDLER] Executing General News scrape...")
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0"}
+                async with client.stream("GET", target, headers=headers, follow_redirects=True, timeout=12.0) as resp:
                     if resp.status_code == 200:
                         buffer = await resp.aread()
                         html_str = buffer.decode('utf-8', errors='replace')
                         soup = BeautifulSoup(html_str, "html.parser")
-                        img = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
+                        img = soup.find("meta", property="og:image")
                         if img: assets["photo"] = img.get("content")
+                        vid = soup.find("meta", property="og:video:secure_url") or soup.find("meta", property="og:video")
+                        if vid: assets["video"] = vid.get("content")
 
         except Exception as e:
             print(f"💥 [EXTRACTION_ERR] {str(e)}")
 
-        # Final Sanitization
+        # Cleanup
         for k in ["video", "photo"]:
             if assets[k]:
                 assets[k] = assets[k].replace('\\/', '/').replace('&amp;', '&')
                 if assets[k].startswith('//'): assets[k] = 'https:' + assets[k]
 
+        print(f"🏁 [V64_COMPLETE] Photo: {bool(assets['photo'])} | Video: {bool(assets['video'])}")
         return assets
 
     async def llm_triage(self, client, raw_title):
