@@ -174,97 +174,94 @@ class VisionSphereV18_5:
 
     async def extract_media(self, client, url):
         """
-        V37 BULLETPROOF: Zero-crash stream chunking, advanced Protobuf extraction.
+        V40 THE BOUNCER: 
+        Relies on actual HTTP/Meta redirects. No Protobuf math. 
+        Loud error logs for zero-fallback debugging.
         """
         assets = {"video": None, "photo": None, "real_url": url}
-        target_url = url
+        final_url = url
 
         # ==========================================
-        #   STAGE 1: THE EXORCIST GOOGLE DECODER
+        #   STAGE 1: THE REQUEST BOUNCER (GOOGLE NEWS)
         # ==========================================
-        if "google.com" in target_url:
+        if "google.com" in final_url:
+            print(f"🔄 [BOUNCE_START] Hitting Google News Redirect: {final_url}")
+            
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0",
+                "Referer": "https://news.google.com/"
+            }
+            
             try:
-                # 1. Hunt for the Base64 Payload anywhere in the URL
-                segments = re.findall(r'[a-zA-Z0-9\-_]{30,}', target_url)
-                if not segments:
-                    raise ValueError(f"CRITICAL: No Base64 payload found in {target_url}")
+                # 1. Let httpx follow standard HTTP 301/302 redirects
+                resp = await client.get(final_url, headers=headers, follow_redirects=True, timeout=12.0)
+                final_url = str(resp.url)
+                
+                # 2. Check if Google hit us with an HTML-based <meta refresh> instead of a 302
+                if "google.com" in final_url:
+                    print("⚠️ [BOUNCE_NOTICE] HTTP Redirect failed/stuck. Checking for HTML <meta refresh>...")
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    
+                    # Hunt for the meta tag: <meta http-equiv="refresh" content="0;url=https://real-site.com">
+                    meta_refresh = soup.find("meta", attrs={"http-equiv": lambda x: x and x.lower() == "refresh"})
+                    
+                    if meta_refresh:
+                        content = meta_refresh.get("content", "")
+                        match = re.search(r'url=([^;]+)', content, re.IGNORECASE)
+                        if match:
+                            final_url = match.group(1).strip("'\" ")
+                    else:
+                        # Backup: Sometimes Google just drops a raw <a> tag that says "click here"
+                        a_tag = soup.find("a", href=True)
+                        if a_tag and "google.com" not in a_tag['href']:
+                            final_url = a_tag['href']
 
-                encoded_segment = segments[0].strip('=')
-                
-                # 2. Fix Padding
-                missing_padding = len(encoded_segment) % 4
-                if missing_padding:
-                    encoded_segment += "=" * (4 - missing_padding)
-                
-                # 3. Binary Decode (URL-Safe > Standard Fallback)
-                try:
-                    raw_bytes = base64.urlsafe_b64decode(encoded_segment)
-                except Exception:
-                    raw_bytes = base64.b64decode(encoded_segment)
-                
-                # 4. Binary Regex Hunter (Finds 'http' inside the Protobuf wrapper)
-                url_pattern = rb'https?://[^\x00-\x1f\x22\x3c\x3e\x7f-\xff]+'
-                matches = re.findall(url_pattern, raw_bytes)
-                
-                if not matches:
-                    # Dumps the hex to the logs so you can see exactly what went wrong
-                    hex_dump = raw_bytes.hex()[:100]
-                    raise ValueError(f"DECODE_FAIL: No 'http' found. Hex Sample: {hex_dump}")
+                # 3. Final Verification
+                if "google.com" in final_url:
+                    raise ValueError(f"STUCK_IN_GOOGLE_LOOP: Could not find exit URL. Current: {final_url}")
 
-                # 5. Extract and Polish the Longest Match
-                decoded_url = max(matches, key=len).decode('utf-8', errors='ignore')
-                clean_url = re.split(r'[^\w\d\/\-\.\?\&\=\%\:\@\#\+\_\!\*\(\),]', decoded_url)[0]
-                
-                if "google.com" in clean_url:
-                    raise ValueError(f"DECODE_LOOP: URL still points to Google: {clean_url}")
-
-                target_url = clean_url
-                assets["real_url"] = clean_url
-                print(f"✅ [SUCCESS] Decoded Google News -> {clean_url}")
+                assets["real_url"] = final_url
+                print(f"✅ [BOUNCE_SUCCESS] Escaped to Source -> {final_url}")
 
             except Exception as e:
-                print(f"❌ [STAGE_1_ERROR]: {str(e)}")
-                # We keep going with the original URL instead of crashing the worker
+                print(f"❌ [STAGE_1_FATAL]: {str(e)}")
+                print(traceback.format_exc())
+                # We explicitly raise or log here because you said NO silent fallbacks.
+                # You can decide if you want to abort extraction entirely here.
 
         # ==========================================
-        #   STAGE 2: MEDIA ROUTING (STRICT)
+        #   STAGE 2: PLATFORM EMBED SNATCHER
         # ==========================================
-        final_url = assets["real_url"]
-        
         try:
             # --- 1. YOUTUBE ---
             if any(x in final_url for x in ["youtube.com", "youtu.be"]):
                 match = re.search(r'(?:v=|youtu\.be/|embed/|shorts/)([^&?#/ ]+)', final_url)
                 if not match:
-                    print(f"⚠️ [YT_ERROR]: Could not extract ID from {final_url}")
-                else:
-                    vid_id = match.group(1)
-                    assets["video"] = f"https://www.youtube.com/embed/{vid_id}"
-                    assets["photo"] = f"https://img.youtube.com/vi/{vid_id}/maxresdefault.jpg"
+                    raise ValueError(f"Could not extract YouTube ID from {final_url}")
+                vid_id = match.group(1)
+                assets["video"] = f"https://www.youtube.com/embed/{vid_id}"
+                assets["photo"] = f"https://img.youtube.com/vi/{vid_id}/maxresdefault.jpg"
 
             # --- 2. TIKTOK ---
             elif "tiktok.com" in final_url:
                 match = re.search(r'video/(\d+)', final_url)
                 if not match:
-                    print(f"⚠️ [TIKTOK_ERROR]: No video ID found in URL {final_url}")
-                else:
-                    assets["video"] = f"https://www.tiktok.com/embed/v2/{match.group(1)}"
-                    try:
-                        res = await client.get(f"https://www.tiktok.com/oembed?url={urllib.parse.quote(final_url)}", timeout=5.0)
-                        if res.status_code == 200:
-                            assets["photo"] = res.json().get("thumbnail_url")
-                    except Exception as e:
-                        print(f"⚠️ [TIKTOK_OEMBED_FAIL]: {str(e)}")
+                    raise ValueError(f"No video ID found in TikTok URL: {final_url}")
+                assets["video"] = f"https://www.tiktok.com/embed/v2/{match.group(1)}"
+                
+                res = await client.get(f"https://www.tiktok.com/oembed?url={urllib.parse.quote(final_url)}", timeout=5.0)
+                if res.status_code != 200:
+                    raise ConnectionError(f"TikTok oEmbed failed with status {res.status_code}")
+                assets["photo"] = res.json().get("thumbnail_url")
 
             # --- 3. X / TWITTER ---
             elif any(d in final_url for d in ["x.com", "twitter.com"]):
                 match = re.search(r'status/(\d+)', final_url)
                 if not match:
-                    print(f"⚠️ [X_ERROR]: No status ID found in {final_url}")
-                else:
-                    t_id = match.group(1)
-                    assets["video"] = f"https://platform.twitter.com/embed/Tweet.html?id={t_id}"
-                    assets["photo"] = f"https://vxtwitter.com/i/status/{t_id}.jpg"
+                    raise ValueError(f"No status ID found in Twitter URL: {final_url}")
+                t_id = match.group(1)
+                assets["video"] = f"https://platform.twitter.com/embed/Tweet.html?id={t_id}"
+                assets["photo"] = f"https://vxtwitter.com/i/status/{t_id}.jpg"
 
             # --- 4. TELEGRAM ---
             elif "t.me" in final_url:
@@ -272,58 +269,56 @@ class VisionSphereV18_5:
                 if re.search(r'/[^/]+/\d+', clean_tg):
                     assets["video"] = f"{clean_tg}?embed=1"
                 
-                try:
-                    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-                    tg_req = await client.get(clean_tg, headers=headers, follow_redirects=True, timeout=5.0)
-                    if tg_req.status_code != 200:
-                        print(f"⚠️ [TG_ERROR]: Status {tg_req.status_code} for {clean_tg}")
-                    else:
-                        soup = BeautifulSoup(tg_req.text, "html.parser")
-                        og_img = soup.find("meta", property="og:image")
-                        if og_img and "tgme_logo" not in og_img.get("content"):
-                            assets["photo"] = og_img.get("content")
-                except Exception as e:
-                    print(f"⚠️ [TG_FETCH_FAIL]: {str(e)}")
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+                tg_req = await client.get(clean_tg, headers=headers, follow_redirects=True, timeout=5.0)
+                if tg_req.status_code != 200:
+                    raise ConnectionError(f"Telegram fetch failed. Status: {tg_req.status_code}")
+                
+                soup = BeautifulSoup(tg_req.text, "html.parser")
+                og_img = soup.find("meta", property="og:image")
+                if not og_img or "tgme_logo" in og_img.get("content", ""):
+                    raise ValueError(f"No valid unique preview image found for Telegram: {clean_tg}")
+                assets["photo"] = og_img.get("content")
 
-            # --- 5. OMNI-NEWS (THE STREAM FIX) ---
+            # --- 5. OMNI-NEWS (THE AREAD FIX) ---
             else:
                 headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0",
                     "Accept": "text/html,application/xhtml+xml,xml;q=0.9",
                     "Referer": "https://www.google.com/"
                 }
                 
-                async with client.stream("GET", final_url, headers=headers, follow_redirects=True, timeout=8.0) as resp:
+                async with client.stream("GET", final_url, headers=headers, follow_redirects=True, timeout=10.0) as resp:
                     if resp.status_code != 200:
-                        print(f"❌ [NEWS_FETCH_FAIL]: {resp.status_code} for {final_url}")
+                        raise ConnectionError(f"News site rejected connection. Status: {resp.status_code} for {final_url}")
+                    
+                    content_bytes = bytearray()
+                    # Safely sip the chunk stream instead of crashing aread()
+                    async for chunk in resp.aiter_bytes(chunk_size=8192):
+                        content_bytes.extend(chunk)
+                        if len(content_bytes) >= 16384: # Stop reading after ~16KB
+                            break
+                    
+                    soup = BeautifulSoup(content_bytes, "html.parser")
+                    
+                    og_img = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
+                    if og_img:
+                        assets["photo"] = og_img.get("content")
                     else:
-                        content_bytes = bytearray()
-                        # BUG FIX: Safely sip the chunk stream instead of crashing aread()
-                        async for chunk in resp.aiter_bytes(chunk_size=8192):
-                            content_bytes.extend(chunk)
-                            if len(content_bytes) >= 16384: # Stop after ~16KB
-                                break
-                        
-                        soup = BeautifulSoup(content_bytes, "html.parser")
-                        
-                        og_img = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
-                        if og_img:
-                            assets["photo"] = og_img.get("content")
-                        else:
-                            print(f"⚠️ [NEWS_INFO]: No preview image found in meta for {final_url}")
-                            
-                        og_vid = soup.find("meta", property="og:video:secure_url") or soup.find("meta", property="og:video")
-                        if og_vid:
-                            assets["video"] = og_vid.get("content")
+                        print(f"⚠️ [OMNI_WARN]: Loaded 16KB but no og:image found for {final_url}")
+                    
+                    og_vid = soup.find("meta", property="og:video:secure_url") or soup.find("meta", property="og:video")
+                    if og_vid:
+                        assets["video"] = og_vid.get("content")
 
         except asyncio.TimeoutError:
-            print(f"⏰ [TIMEOUT_ERROR]: Request for {final_url} timed out.")
+            print(f"⏰ [STAGE_2_FATAL]: Connection Timeout while snatching embeds for {final_url}")
         except Exception as e:
-            # Catches httpx-specific timeouts without breaking
+            # Loud, aggressive error logging
             if "timeout" in str(e).lower():
-                print(f"⏰ [TIMEOUT_ERROR]: Connection to {final_url} dropped.")
+                print(f"⏰ [STAGE_2_FATAL]: Httpx connection dropped for {final_url}")
             else:
-                print(f"💥 [STAGE_2_CRASH]: {str(e)}")
+                print(f"💥 [STAGE_2_FATAL]: Exception occurred: {str(e)}")
                 print(traceback.format_exc())
 
         # ==========================================
@@ -332,7 +327,8 @@ class VisionSphereV18_5:
         for k in ["video", "photo"]:
             if assets[k]:
                 assets[k] = assets[k].replace('\\u002F', '/').replace('&amp;', '&')
-                if assets[k].startswith('//'): assets[k] = 'https:' + assets[k]
+                if assets[k].startswith('//'): 
+                    assets[k] = 'https:' + assets[k]
 
         return assets
 
