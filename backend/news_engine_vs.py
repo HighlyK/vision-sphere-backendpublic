@@ -12,24 +12,58 @@ import time
 import logging
 import re
 from googlenewsdecoder import gnewsdecoder
-import requests
-#import googlenewsdecoder
-from unittest import mock
 from supabase import create_client, Client
 from dotenv import load_dotenv
-import base64
-import traceback
-import random
+import itertools
 load_dotenv()
 # ==========================================
 # 0. CONFIGURATION & THROTTLES
 # ==========================================
-GROQ_API_KEY =  os.getenv("GROQ_API_KEY")
-# 🛡️ THE COGNITIVE THROTTLES
-MAX_CONCURRENT_TASKS = asyncio.Semaphore(1)
-LLM_SEMAPHORE = asyncio.Semaphore(1) 
+MAX_CONCURRENT_TASKS_LIMIT = 10 
+# Create the ACTUAL context manager
+SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_TASKS_LIMIT)
 OSM_RATE_LIMIT_LOCK = asyncio.Lock()
+class HydraLLMManager:
+    def __init__(self):
+        self.endpoints = []
+        
+        # 1. Load Groq Keys (2x) - Uses OpenAI Format
+        for key in [os.getenv("GROQ_KEY_1"), os.getenv("GROQ_KEY_2")]:
+            if key:
+                self.endpoints.append({
+                    "provider": "OPENAI_FORMAT",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "openai/gpt-oss-120b",
+                    "key": key
+                })
+                
+        # 2. Load DeepSeek Keys - Uses OpenAI Format
+        for key in [os.getenv("DEEPSEEK_KEY_1"), os.getenv("DEEKSEEK_KEY_2")]:
+            if key:
+                self.endpoints.append({
+                    "provider": "OPENAI_FORMAT",
+                    "url": "https://api.deepseek.com/chat/completions",
+                    "model": "deepseek-chat",
+                    "key": key
+                })
+                
+        # 3. Load Gemini Keys (2x) - Uses Google REST Format
+        # 3. Load Mistral/Together Keys (Universal Format)
+        for key in [os.getenv("MISTRAL_KEY_1"), os.getenv("MISTRAL_KEY_2")]:
+            if key:
+                self.endpoints.append({
+                    "provider": "OPENAI_FORMAT", # Unified format
+                    "url": "https://api.mistral.ai/v1/chat/completions",
+                    "model": "mistral-small-latest",
+                    "key": key
+                })
+                
+        # Create an infinite round-robin loop across all loaded keys
+        self.cycle = itertools.cycle(self.endpoints) if self.endpoints else None
 
+# Initialize the manager
+HYDRA_MANAGER = HydraLLMManager()
+# Filter out empty strings/Nones and create an infinite rotation loop
 # 🦅 THE 36 PREMIUM INTELLIGENCE DOMAINS (Tactical, Defense, Humanitarian, Cyber)
 PREMIUM_DOMAINS = {
     "ACLED": "acleddata.com",
@@ -68,7 +102,6 @@ PREMIUM_DOMAINS = {
     "UN Security Council": "securitycouncilreport.org",
     "Small Arms Survey": "smallarmssurvey.org"
 }
-
 # The Master 200+ Country List
 ALL_NATIONS = [
     "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Antigua and Barbuda", "Argentina", "Armenia", "Australia", "Austria", "Azerbaijan",
@@ -176,228 +209,210 @@ class VisionSphereV18_5:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
-
-    async def decode_google_news_url(self, client, url: str) -> dict:
-        # 🚨 SET YOUR WORKER URL HERE
-        WORKER_URL = "https://your-worker-name.your-subdomain.workers.dev"
-        
-        result = {"status": False, "url": url, "method": None, "error": None}
-        
-        if "news.google.com" not in url:
-            return {"status": False, "url": url, "error": "Not a Google News URL."}
-
-        # ==========================================
-        # STAGE 0: LOCAL BINARY SLICE (Zero Network)
-        # ==========================================
-        try:
-            match = re.search(r'(?:articles|read)/([^?\/]+)', url)
-            if match:
-                b64_id = match.group(1)
-                b_str = b64_id.replace('-', '+').replace('_', '/')
-                b_str += '=' * (-len(b_str) % 4)
-                data_str = base64.b64decode(b_str).decode('latin-1', errors='ignore')
-                url_match = re.search(r'https?://[^\s\x00-\x1f\x7f-\xff"\'<>]+', data_str[data_str.find("http"):])
-                if url_match:
-                    return {"status": True, "url": url_match.group(0), "method": "preemptive_binary_slice"}
-        except: pass
-
-        # ==========================================
-        # STAGE 1: CLOUDFLARE SHIELDED HANDSHAKE
-        # ==========================================
-        if not hasattr(self, "_google_lock"):
-            self._google_lock = asyncio.Lock()
-
-        async with self._google_lock:
-            try:
-                # A: Fetch Tags via Worker
-                encoded_target = urllib.parse.quote(url)
-                tag_resp = await client.get(f"{WORKER_URL}/?mode=tags&url={encoded_target}")
-                
-                if tag_resp.status_code == 429:
-                    return {"status": False, "url": url, "error": "Cloudflare IP also rate-limited. Wait 5 mins."}
-
-                html = tag_resp.text
-                sg = re.search(r'data-n-a-sg="([^"]+)"', html)
-                ts = re.search(r'data-n-a-ts="([^"]+)"', html)
-
-                if not (sg and ts):
-                    return {"status": False, "url": url, "error": "Could not find tags via Worker proxy."}
-
-                # B: BatchExecute via Worker
-                inner_payload = f'["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],"{b64_id}",{ts.group(1)},"{sg.group(1)}"]'
-                f_req = f"f.req={urllib.parse.quote(json.dumps([[('Fbv4je', inner_payload, None, 'generic')]]))}"
-                
-                # We POST the payload to the Worker, and the Worker POSTS it to Google
-                batch_resp = await client.post(f"{WORKER_URL}/?mode=batch", content=f_req)
-                
-                if batch_resp.status_code != 200:
-                    return {"status": False, "url": url, "error": f"Worker Batch Fail: {batch_resp.status_code}"}
-
-                # C: Parse Final URL
-                url_match = re.search(r'"(https?://[^"]+)"', batch_resp.text)
-                if url_match:
-                    return {
-                        "status": True, 
-                        "url": url_match.group(1), 
-                        "method": "cloudflare_shield_handshake"
-                    }
-                
-                return {"status": False, "url": url, "error": "URL not found in Worker response."}
-
-            except Exception as e:
-                return {"status": False, "url": url, "error": f"CloudPivot Error: {str(e)}"}
-
     async def extract_media(self, client, url):
-        start_time = time.time()
-        assets = {"video": None, "photo": None, "real_url": url}
-        
-        print(f"\n⚡ [START] Target: {url[:55]}...")
+        """
+        Extracts playable video embeds and photo previews.
+        Passes all links through a Google News RSS decoder first.
+        """
+        assets = {"video": None, "photo": None}
+        target_url = url
 
-        # --- THE DECODE STAGE ---
-        if "news.google.com" in url:
-            print("📡 [DECODER] Running Local DeepWiki Handshake...")
-            decode_result = await self.decode_google_news_url(client, url)
-            
-            if decode_result["status"]:
-                assets["real_url"] = decode_result["url"]
-                print(f"🎯 [HIT] Decoded ({decode_result['method']}): {assets['real_url'][:60]}")
-            else:
-                print(f"🚫 [DECODE_FAIL] Reason: {decode_result['error']}")
-                return assets # Stop early to avoid hitting dead ends
-                
-        # --- STAGE 2: MULTI-PLATFORM EXTRACTION ---
-        target = assets.get("real_url")
-        if not target or "news.google.com" in target:
-            return assets
-            
-        print(f"🔎 [SCRAPE] Accessing real source: {target[:60]}")
+        # ==========================================
+        #   STAGE 1: GOOGLE NEWS RSS DECODER
+        # ==========================================
+        if "news.google.com" in target_url or "news.url.google.com" in target_url:
+            try:
+                # Pass the proxy explicitly to the decoder!
+                proxy_url = os.getenv("PROXY_GATEWAY_URL")
+                decoded = gnewsdecoder(target_url, interval=1, proxy=proxy_url) # Added proxy param
+                if decoded and decoded.get("status"):
+                    target_url = decoded.get("decoded_url")
+            except Exception as e:
+                print(f"[!] Google News Decode Error: {e}")
 
+        # ==========================================
+        #   STAGE 2: RESOLUTION & EXTRACTION
+        # ==========================================
         try:
-            # High-Authority Mobile Identity (Spoofs iPhone Safari)
-            headers = {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-            }
-            
-            # Use stream to handle potentially large news pages efficiently
-            async with client.stream("GET", target, headers=headers, follow_redirects=True, timeout=12.0) as resp:
-                if resp.status_code == 200:
-                    # Read only what we need
-                    content = await resp.aread()
-                    soup = BeautifulSoup(content.decode('utf-8', errors='replace'), "html.parser")
+            # Resolve shortlinks (e.g., t.co, vt.tiktok.com) to the final domain
+            try:
+                head_resp = await client.head(target_url, follow_redirects=True, timeout=5.0)
+                final_url = str(head_resp.url)
+            except Exception:
+                final_url = target_url  # Fallback if server blocks HEAD requests
+
+            # --- 1. TIKTOK ---
+            if "tiktok.com" in final_url:
+                if match := re.search(r'video/(\d+)', final_url):
+                    video_id = match.group(1)
+                    assets["video"] = f"https://www.tiktok.com/embed/v2/{video_id}"
                     
-                    # --- TELEGRAM ---
-                    if "t.me" in target:
-                        print("📨 [DEBUG] Using Telegram parser...")
-                        meta_img = soup.find("meta", property="og:image")
-                        if meta_img: assets["photo"] = meta_img.get("content")
-                        # Check if it's a specific message link for video embed
-                        if "/s/" not in target and re.search(r'/\d+$', target):
-                            assets["video"] = f"{target}?embed=1"
+                    try:
+                        encoded_url = urllib.parse.quote(final_url)
+                        o_req = await client.get(f"https://www.tiktok.com/oembed?url={encoded_url}")
+                        if o_req.status_code == 200:
+                            assets["photo"] = o_req.json().get("thumbnail_url")
+                    except Exception:
+                        pass
 
-                    # --- TIKTOK ---
-                    elif "tiktok.com" in target:
-                        print("🎵 [DEBUG] Using TikTok parser...")
-                        meta_img = soup.find("meta", property="og:image")
-                        if meta_img: assets["photo"] = meta_img.get("content")
-                        t_match = re.search(r'video/(\d+)', target)
-                        if t_match: assets["video"] = f"https://www.tiktok.com/embed/v2/{t_match.group(1)}"
+            # --- 2. X / TWITTER ---
+            elif any(domain in final_url for domain in ["x.com", "twitter.com"]):
+                if match := re.search(r'status/(\d+)', final_url):
+                    tweet_id = match.group(1)
+                    assets["video"] = f"https://platform.twitter.com/embed/Tweet.html?id={tweet_id}"
+                    
+                    try:
+                        vx_req = await client.get(f"https://api.vxtwitter.com/i/status/{tweet_id}")
+                        if vx_req.status_code == 200:
+                            vx_data = vx_req.json()
+                            if media := vx_data.get("media_extended", []):
+                                assets["photo"] = media[0].get("thumbnail_url") or media[0].get("url")
+                    except Exception:
+                        pass
 
-                    # --- X (TWITTER) ---
-                    elif any(d in target for d in ["x.com", "twitter.com"]):
-                        print("🐦 [DEBUG] Using X.com parser...")
-                        meta_img = soup.find("meta", property="og:image")
-                        if meta_img: assets["photo"] = meta_img.get("content")
-                        x_match = re.search(r'status/(\d+)', target)
-                        if x_match: assets["video"] = f"https://platform.twitter.com/embed/Tweet.html?id={x_match.group(1)}"
+            # --- 3. TELEGRAM ---
+            elif "t.me" in final_url:
+                clean_tg = final_url.split('?')[0]
+                if re.search(r'/[^/]+/\d+', clean_tg):
+                    assets["video"] = f"{clean_tg}?embed=1"
+                    
+                try:
+                    tg_req = await client.get(clean_tg, follow_redirects=True)
+                    soup = BeautifulSoup(tg_req.text, "html.parser")
+                    if og_img := soup.find("meta", property="og:image"):
+                        pic_url = og_img.get("content")
+                        if "tgme_logo" not in pic_url:
+                            assets["photo"] = pic_url
+                except Exception:
+                    pass
 
-                    # --- GENERAL NEWS SCRAPE ---
-                    else:
-                        # Look for the best possible image meta tags
-                        img_tag = soup.find("meta", property=re.compile(r'og:image|twitter:image|thumbnail')) or \
-                                soup.find("link", rel="image_src")
-                        if img_tag: 
-                            assets["photo"] = img_tag.get("content") or img_tag.get("href")
+            # --- 4. GENERAL FALLBACK ---
+            else:
+                try:
+                    req = await client.get(final_url, follow_redirects=True)
+                    soup = BeautifulSoup(req.text, "html.parser")
+                    
+                    twitter_player = soup.find("meta", attrs={"name": "twitter:player"})
+                    og_vid_secure = soup.find("meta", property="og:video:secure_url")
+                    og_vid = soup.find("meta", property="og:video")
+                    
+                    if twitter_player:
+                        assets["video"] = twitter_player.get("content")
+                    elif og_vid_secure:
+                        assets["video"] = og_vid_secure.get("content")
+                    elif og_vid:
+                        assets["video"] = og_vid.get("content")
                         
-                        # Look for video meta tags
-                        vid_tag = soup.find("meta", property=re.compile(r'og:video|og:video:url|twitter:player:stream'))
-                        if vid_tag:
-                            assets["video"] = vid_tag.get("content")
+                    og_img = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
+                    if og_img:
+                        assets["photo"] = og_img.get("content")
+                except Exception:
+                    pass
 
         except Exception as e:
-            print(f"💥 [SCRAPE_ERROR] {type(e).__name__}: {str(e)}")
+            print(f"[!] Extraction Error: {e}")
 
         # ==========================================
-        #   STAGE 3: ASSET CLEANUP
+        #   STAGE 3: CLEANUP
         # ==========================================
         for k in ["video", "photo"]:
-            if assets[k] and isinstance(assets[k], str):
-                # Remove escape slashes and HTML entities
-                clean_url = assets[k].replace('\\/', '/').replace('&amp;', '&')
-                # Fix relative/protocol-less URLs
-                if clean_url.startswith('//'): 
-                    clean_url = 'https:' + clean_url
-                elif clean_url.startswith('/') and not clean_url.startswith('//'): 
-                    clean_url = urljoin(target, clean_url)
-                assets[k] = clean_url
+            if isinstance(assets[k], str):
+                assets[k] = assets[k].replace('\\u002F', '/')
 
-        duration = time.time() - start_time
-        print(f"🏁 [V72_COMPLETE] Found Photo: {bool(assets['photo'])} | Found Video: {bool(assets['video'])} | Time: {duration:.1f}s\n")
-        
         return assets
 
     async def llm_triage(self, client, raw_title):
         """
-        V25 FIXED GROQ ENGINE:
-        Fixed 'string indices' error by treating raw_title as a string, not a list.
+        V28 HYDRA ENGINE: 
+        Now standardized for Groq, DeepSeek, and Mistral.
         """
-        if not GROQ_API_KEY or "YOUR_" in GROQ_API_KEY:
-            return {"title": raw_title, "threat": "KEY_MISSING 🔴", "loc_name": "Unknown"}
+        if not HYDRA_MANAGER.cycle:
+            return {"title": raw_title, "intensity": "LOW ⚪", "loc_name": "Unknown", "context": "ALL_KEYS_MISSING 🔴"}
 
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+        node = next(HYDRA_MANAGER.cycle)
         
         system_msg = (
             "You are a military intelligence analyst. "
-            "1. Translate to English. 2. Level: LOW/MED/HIGH/CRITICAL. 3. Loc: City, Country. "
+            "1. Translate to English. 2. Intensity: LOW/MODERATE/HIGH/CRITICAL. "
+            "3. Loc: Extract EXACT city, region, or country. "
             "4. Context: One-sentence tactical background explaining the 'why'. "
-            "5. NEVER LEAVE OUT LOCATION AS EMPTY ALWAYS FILLED BASED ON CONTEXT. LEAVING LOCATION EMPTY IS FORBIDDEN"
-            "Output ONLY JSON: {\"title\": \"Title\", \"intensity\": \"Level\", \"loc\": \"Location\", \"context\": \"Context\"}"
+            "Output ONLY valid JSON: {\"title\": \"Title\", \"intensity\": \"Level\", \"loc\": \"Geocodable Location\", \"context\": \"Context\"}"
         )
 
-        payload = {
-            "model": "openai/gpt-oss-120b", 
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": f"Triage: {raw_title}"}
-            ],
-            "temperature": 0.0
-        }
-
         try:
-            r = await client.post(url, headers=headers, json=payload, timeout=15)
-            data = json.loads(r.json()['choices'][0]['message']['content'])
+            # Mistral, Groq, and DeepSeek ALL use this block now
+            if node["provider"] == "OPENAI_FORMAT":
+                headers = {
+                    "Authorization": f"Bearer {node['key']}", 
+                    "Content-Type": "application/json"
+                }
+                payload = {
+                    "model": node["model"],
+                    "messages": [
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": f"Triage: {raw_title}"}
+                    ],
+                    "temperature": 0.0,
+                    "response_format": {"type": "json_object"} # Supported by Mistral/Groq
+                }
+                
+                r = await client.post(node["url"], headers=headers, json=payload, timeout=15)
+                res_data = r.json()
+                raw_text = res_data['choices'][0]['message']['content']
+
+            # JSON Cleaning (Mistral sometimes adds markdown)
+            raw_text = raw_text.strip()
+            if raw_text.startswith("```json"):
+                raw_text = raw_text[7:-3].strip()
+            elif raw_text.startswith("```"):
+                raw_text = raw_text[3:-3].strip()
+
+            data = json.loads(raw_text)
+            
             return {
                 "title": data.get("title", raw_title),
                 "intensity": data.get("intensity", "MODERATE 🟡"),
                 "loc_name": data.get("loc", "Unknown"),
-                "context": data.get("context", "Tactical analysis in progress.")
+                "context": data.get("context", f"Triage via {node['model']}")
             }
-        except:
-            return {"title": raw_title, "intensity": "LOW ⚪", "loc_name": "Unknown", "context": "Triage failed."}
-        
+
+        except Exception as e:
+            # Fallback logic remains the same
+            return {
+                "title": raw_title, 
+                "intensity": "LOW ⚪", 
+                "loc_name": "Unknown", 
+                "context": f"Triage failed on {node['model']}."
+            }
 
     async def osm_geocode(self, client, loc_name):
-        if not loc_name or loc_name.lower() in ["none", "unknown", "global", "middle east"]: return None, None
-        url = f"https://nominatim.openstreetmap.org/search?q={urllib.parse.quote(loc_name)}&format=json&limit=1"
+        """
+        Hardened OSM Geocoder: 
+        Rejects junk AI outputs and respects Nominatim's strict rate limits.
+        """
+        if not loc_name or not isinstance(loc_name, str): 
+            return None, None
+            
+        loc_clean = loc_name.strip()
+        
+        # Blacklist of vague terms the AI might hallucinate
+        bad_words = ["none", "unknown", "global", "middle east", "unspecified", "various", "worldwide"]
+        if loc_clean.lower() in bad_words or len(loc_clean) < 3: 
+            return None, None
+            
+        url = f"https://nominatim.openstreetmap.org/search?q={urllib.parse.quote(loc_clean)}&format=json&limit=1"
+        
         async with OSM_RATE_LIMIT_LOCK:
-            await asyncio.sleep(1.2) 
+            await asyncio.sleep(1.2) # Nominatim will ban IPs if you query faster than 1 sec
             try:
                 r = await client.get(url, timeout=10)
                 data = r.json()
-                if data: return float(data[0]["lat"]), float(data[0]["lon"])
-            except: pass 
+                # Check if Nominatim actually found a match
+                if data and isinstance(data, list) and len(data) > 0: 
+                    return float(data[0]["lat"]), float(data[0]["lon"])
+            except: 
+                pass 
+                
         return None, None
 
     # ==========================================
@@ -427,7 +442,6 @@ class VisionSphereV18_5:
                 "TheStudyofWar", "CovertShores", "CavasShips", "GeoConfirmed", "OAlexanderDK",
                 "COUPSURE", "trbrtc", "Archer83Able", "Schizointel", "Osinttechnical"
             ],
-
             # 🟡 TIER 2: MIDDLE EAST & LEVANT TACTICAL
             "MENA_HOTZONE": [
                 "ELINTNews", "IranIntl_En", "jpost", "barakravid", "Joyce_Karam", 
@@ -447,7 +461,7 @@ class VisionSphereV18_5:
 
             # 🟢 TIER 4: INDO-PACIFIC & ASIA
             "INDO_PACIFIC": [
-                "IndoPac_Info", "CollinSLKoh", "t_shugart", "detresfa_", "duandang",
+                "IndoPac_Info", "CollinSLKoh", "t_shugart", "duandang",
                 "RFA_Chinese", "WilliamYang120", "DefenseAlerts", "sidhant", "ThePrintIndia",
                 "SushantSin", "ShivAroor", "nktpnd", "M_Bhojwani", "jcheng143",
                 "Hawkeye1745", "IndoPac_Info", "Strategic_Front", "LCSM_Updates", "C_A_M_P_U_S"
@@ -579,7 +593,7 @@ class VisionSphereV18_5:
         return [res for res in results if res]
         
     async def fetch_telegram_stealth(self, client):
-        source_file = "telegram_new_sources.txt"
+        source_file = "backend//telegram_new_sources.txt"
         #print(f"[*] TELEGRAM DEBUG: Attempting to read {source_file}...")
         
         try:
@@ -654,7 +668,7 @@ class VisionSphereV18_5:
         return [res for res in results if res]
 
     async def process_intel(self, client, raw_item):
-        async with MAX_CONCURRENT_TASKS:
+        async with SEMAPHORE:
             # 1. Enhanced Triage (Fixed safe parsing)
             intel = await self.llm_triage(client, raw_item['raw_title'])
             lat, lon = await self.osm_geocode(client, intel.get('loc_name', 'Unknown'))
@@ -698,16 +712,10 @@ class VisionSphereV18_5:
 
     async def fetch_gdelt(self, client):
         """
-        V22 HARDENED: Implements Exponential Backoff, Headers, and Google-Proxy Fallback 
-        to bypass GDELT 429 Rate Limiting and blockades.
+        V22 HARDENED: Implements Exponential Backoff and Google-Proxy Fallback 
+        to bypass GDELT 429 Rate Limiting.
         """
         url = "https://api.gdeltproject.org/api/v2/doc/doc?query=(tone<-2 OR military OR attack) -sports&mode=artlist&format=json&maxrecords=5"
-        
-        # 🛡️ THE FIX: GDELT-Specific Headers to prevent instant connection drops
-        gdelt_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*"
-        }
         
         # 🛡️ STRATEGY 1: Multistage Retry with Exponential Backoff
         for attempt in range(3): # Try 3 times
@@ -716,46 +724,28 @@ class VisionSphereV18_5:
                 wait_time = (attempt * 5) + random.uniform(2.0, 4.0)
                 await asyncio.sleep(wait_time)
                 
-                # Pass the headers here
-                r = await client.get(url, headers=gdelt_headers, timeout=20)
+                r = await client.get(url, timeout=20)
                 
                 if r.status_code == 200:
-                    try:
-                        data = r.json()
-                        articles = data.get('articles', [])
-                    except Exception as e:
-                        print(f"[!] GDELT JSON Parse Error: {e}")
-                        continue
-                        
+                    articles = r.json().get('articles', [])
                     if not articles: continue
                     
-                    raw_items = []
-                    for a in articles:
-                        # Defensive dictionary access
-                        title = a.get('title', 'Unknown Event')
-                        link = a.get('url', '')
-                        country = a.get('sourcecountry', 'INTL')
-                        
-                        if link and self.track_viewpoint(title, f"GDELT ({country})", link):
-                            raw_items.append({"raw_title": title, "src": f"GDELT ({country})", "url": link})
-                            
-                    if raw_items:
-                        results = await asyncio.gather(*(self.process_intel(client, item) for item in raw_items))
-                        return [res for res in results if res]
+                    raw_items = [{"raw_title": a['title'], "src": f"GDELT ({a.get('sourcecountry', 'INTL')})", "url": a['url']} for a in articles if self.track_viewpoint(a['title'], f"GDELT ({a.get('sourcecountry', 'INTL')})", a['url'])]
+                    results = await asyncio.gather(*(self.process_intel(client, item) for item in raw_items))
+                    return [res for res in results if res]
                 
-                elif r.status_code == 429:
+                if r.status_code == 429:
                     print(f"[!] GDELT Mainframe Throttled (Attempt {attempt+1}/3). Backing off...")
-                    continue 
+                    continue # Try again after sleep
                     
             except Exception as e:
-                # Shorten the error string so it doesn't flood your logs
-                print(f"[!] GDELT Connection Error: {str(e)[:40]}")
+                print(f"[!] GDELT Connection Error: {str(e)}")
                 continue
 
         # 🛡️ STRATEGY 2: THE FAILSAFE (The "VisionSphere" Proxy Move)
+        # If GDELT is totally blocked, we pivot to search GDELT's indexed content via Google
         print("[⚡] GDELT API Failed. Activating Google-Proxy Fallback...")
-        # Using when:1d to ensure it finds hits and avoids the ZERO_RESULTS trap
-        fallback_query = "site:gdeltproject.org OR (military conflict) when:1d"
+        fallback_query = "site:gdeltproject.org OR (military conflict) when:1h"
         return await self.fetch_dynamic_crawler(client, fallback_query, "GDELT FAILSAFE")
 
     async def fetch_premium_matrix(self, client):
@@ -779,7 +769,7 @@ class VisionSphereV18_5:
         for name in sampled_keys:
             domain = PREMIUM_DOMAINS[name]
             src_label = f"ELITE: {name.upper()}"
-            url = f"https://news.google.com/rss/search?q=site:{domain}+(conflict OR military OR breach)+when:7d&hl=en-US&gl=US"
+            url = f"https://news.google.com/rss/search?q=site:{domain}+(conflict OR military OR breach)+when:24h&hl=en-US&gl=US"
             
             try:
                 await asyncio.sleep(random.uniform(0.5, 1.2))
@@ -843,7 +833,7 @@ class VisionSphereV18_5:
 
     def ensure_opml_exists(self):
         # PROTECT: If the 2.5MB monster already exists, don't overwrite it!
-        opml_path = "sources.opml"
+        opml_path = "backend//sources.opml"
         if os.path.exists(opml_path): 
             print(f"[+] Leviathan Matrix Detected ({os.path.getsize(opml_path)/1024/1024:.2f} MB). Skipping rebuild.")
             return
@@ -898,7 +888,7 @@ class VisionSphereV18_5:
         import re, html, feedparser, random
         from dataclasses import dataclass
 
-        opml_path = "sources.opml" 
+        opml_path = "backend//sources.opml" 
         @dataclass
         class MockFeed:
             title: str
@@ -1037,35 +1027,43 @@ class VisionSphereV18_5:
         await site.start()
 
     async def execute_stream(self):
-        """
-        V30: THE CONTINUOUS LEVIATHAN
-        Launches all fetchers as independent, parallel streams.
-        """
         self.ensure_opml_exists()
-        print(f"\n{'='*60}\n VISIONSPHERE STREAMING ENGINE STARTING\n{'='*60}\n")
+        print(f"\n{'='*60}\n VISIONSPHERE V33.0: X-SHADOW RECOVERY\n{'='*60}\n")
 
-        async with httpx.AsyncClient(timeout=30.0, headers=self.headers, follow_redirects=True) as client:
-            # Define your workers and their "Freshness Intervals"
-            workers = [
-                (self.fetch_x_stealth, "X_SHADOW", 420),          # Every 7 mins
-                (self.fetch_telegram_stealth, "TELEGRAM", 420),    # Every 7 mins
-                (self.fetch_tiktok_stealth, "TIKTOK", 420),        # Every 7 mins
-                (self.fetch_premium_matrix, "PREMIUM", 420),       # Every 7 mins
-                (self.parse_and_fetch_opml, "GLOBAL_OPML", 420),
-                (self.fetch_gdelt, "GDELT", 420)
-            ]
+        # 🛰️ USE THE BACKBONE WITH AUTH
+        proxy_url = os.getenv("PROXY_GATEWAY_URL")
 
-            # Start the Health Check (Crucial for Render.com)
+        # 📉 DATA-SAVER LIMITS
+        limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
+
+        # 🛡️ THE FIX: 
+        # We pass the proxy string directly to 'proxy'. 
+        # This is the most compatible way for httpx on Python 3.10.
+        async with httpx.AsyncClient(
+            proxy=proxy_url, 
+            timeout=60.0, 
+            headers=self.headers, 
+            limits=limits,
+            follow_redirects=True,
+            verify=False 
+        ) as client:
+            
+            # Start Health Check for Render
             asyncio.create_task(self.health_check_server())
 
-            # Launch all fetchers as independent tasks
-            tasks = []
-            for func, label, interval in workers:
-                tasks.append(asyncio.create_task(self.run_worker(client, func, label, interval)))
-                # 🛑 THE FIX: Wait 10 seconds before starting the next worker (Saves RAM)
-                await asyncio.sleep(10)
+            workers = [
+                (self.fetch_x_stealth, "X_SHADOW", 300),
+                (self.fetch_telegram_stealth, "TELEGRAM", 600),
+                (self.fetch_tiktok_stealth, "TIKTOK", 900),
+                (self.fetch_premium_matrix, "PREMIUM", 1200),
+                (self.parse_and_fetch_opml, "GLOBAL_OPML", 3600),
+            ]
 
-            # Keep the main loop alive
+            tasks = [
+                asyncio.create_task(self.run_worker(client, func, label, interval))
+                for func, label, interval in workers
+            ]
+
             await asyncio.gather(*tasks)
 
 # --- [ TEST TRIGGER ] ---
