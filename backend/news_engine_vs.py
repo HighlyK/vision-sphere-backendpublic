@@ -220,15 +220,20 @@ class VisionSphereV18_5:
         # ==========================================
         #   STAGE 1: GOOGLE NEWS RSS DECODER
         # ==========================================
-        if "news.google.com" in target_url or "news.url.google.com" in target_url:
+        if any(domain in target_url for domain in ["news.google.com", "news.url.google.com"]):
             try:
-                # Pass the proxy explicitly to the decoder!
-                proxy_url = os.getenv("PROXY_GATEWAY_URL")
-                decoded = gnewsdecoder(target_url, interval=1, proxy=proxy_url) # Added proxy param
+                # 🚫 PROXY STRIPPED FOR RAW RENDER TEST
+                # We remove the proxy parameter so it uses the server's direct IP.
+                # We keep interval=1 to respect Google's basic rate limiting.
+                decoded = gnewsdecoder(target_url, interval=1) 
+                
                 if decoded and decoded.get("status"):
                     target_url = decoded.get("decoded_url")
+                else:
+                    # Fallback: if decoding fails, keep the original URL so the worker doesn't hang
+                    pass 
             except Exception as e:
-                print(f"[!] Google News Decode Error: {e}")
+                print(f"[!] Raw GNews Decode Error: {e}")
 
         # ==========================================
         #   STAGE 2: RESOLUTION & EXTRACTION
@@ -1027,25 +1032,23 @@ class VisionSphereV18_5:
         await site.start()
 
     async def execute_stream(self):
+        """
+        V33.2: RAW RENDER TEST
+        Direct connection (no proxy) to baseline server performance.
+        """
         self.ensure_opml_exists()
-        print(f"\n{'='*60}\n VISIONSPHERE V33.0: X-SHADOW RECOVERY\n{'='*60}\n")
-
-        # 🛰️ USE THE BACKBONE WITH AUTH
-        proxy_url = os.getenv("PROXY_GATEWAY_URL")
+        print(f"\n{'='*60}\n VISIONSPHERE V33.2: RAW CONNECTION (TEST MODE)\n{'='*60}\n")
 
         # 📉 DATA-SAVER LIMITS
         limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
 
-        # 🛡️ THE FIX: 
-        # We pass the proxy string directly to 'proxy'. 
-        # This is the most compatible way for httpx on Python 3.10.
+        # 🛡️ THE NAKED CLIENT: No proxy, no verify=False.
+        # Just pure Render -> Internet.
         async with httpx.AsyncClient(
-            proxy=proxy_url, 
-            timeout=60.0, 
+            timeout=30.0, 
             headers=self.headers, 
             limits=limits,
-            follow_redirects=True,
-            verify=False 
+            follow_redirects=True
         ) as client:
             
             # Start Health Check for Render
