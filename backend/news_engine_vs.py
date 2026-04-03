@@ -36,14 +36,13 @@ class HydraLLMManager:
                     "model": "openai/gpt-oss-120b",
                     "key": key
                 })
-                
-        # 2. Load DeepSeek Keys - Uses OpenAI Format
-        for key in [os.getenv("DEEPSEEK_KEY_1"), os.getenv("DEEKSEEK_KEY_2")]:
+        #2. Load Cerabas Keys (2x)
+        for key in [os.getenv("CEREBRAS_KEY_1"), os.getenv("CEREBRAS_KEY_2")]:
             if key:
                 self.endpoints.append({
                     "provider": "OPENAI_FORMAT",
-                    "url": "https://api.deepseek.com/chat/completions",
-                    "model": "deepseek-chat",
+                    "url": "https://api.cerebras.ai/v1/chat/completions",
+                    "model": "llama3.1-70b", # Use "llama3.1-8b" if you want even more speed
                     "key": key
                 })
                 
@@ -212,28 +211,40 @@ class VisionSphereV18_5:
     async def extract_media(self, client, url):
         """
         Extracts playable video embeds and photo previews.
-        Passes all links through a Google News RSS decoder first.
+        Passes all links through a Google News RSS decoder via Hugging Face.
         """
         assets = {"video": None, "photo": None}
         target_url = url
 
         # ==========================================
-        #   STAGE 1: GOOGLE NEWS RSS DECODER
+        #    STAGE 1: GOOGLE NEWS RSS DECODER (HF)
         # ==========================================
         if any(domain in target_url for domain in ["news.google.com", "news.url.google.com"]):
             try:
-                # 🚫 PROXY STRIPPED FOR RAW RENDER TEST
-                # We remove the proxy parameter so it uses the server's direct IP.
-                # We keep interval=1 to respect Google's basic rate limiting.
-                decoded = gnewsdecoder(target_url, interval=1) 
-                
-                if decoded and decoded.get("status"):
-                    target_url = decoded.get("decoded_url")
+                # 🚀 OFFLOADING TO HUGGING FACE STEALTH NODE
+                # Replace 'yourusername' with your actual HF username
+                hf_api_url = "https://visionspherecreations-vs.hf.space/decode"
+                    
+                # Using an async post so your news engine doesn't freeze while waiting
+                async with httpx.AsyncClient() as hf_client:
+                    response = await hf_client.post(
+                        hf_api_url, 
+                        json={"url": target_url}, 
+                        timeout=15.0 
+                    )
+                    
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("status") == "success":
+                        target_url = data.get("decoded_url")
+                        print(f"[+] Decoded via HF: {target_url[:50]}...")
+                    else:
+                        print(f"[!] HF Node error: {data.get('detail')}")
                 else:
-                    # Fallback: if decoding fails, keep the original URL so the worker doesn't hang
-                    pass 
+                    print(f"[!] HF API Error: Status {response.status_code}")
+                        
             except Exception as e:
-                print(f"[!] Raw GNews Decode Error: {e}")
+                print(f"[!] HF Remote Decode Error: {e}")
 
         # ==========================================
         #   STAGE 2: RESOLUTION & EXTRACTION
