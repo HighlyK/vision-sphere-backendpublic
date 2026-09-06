@@ -1,0 +1,377 @@
+{
+    "country": "Ukraine",
+    "status": "INVASION",
+    "last_updated": "2026-06-01T17:32:32.502803",
+    "macro_economy": {
+        "gdp_history": [
+            {
+                "label": "2011",
+                "value": 169333835201.554,
+                "unit": "USD"
+            },
+            {
+                "label": "2012",
+                "value": 182591753827.949,
+                "unit": "USD"
+            },
+            {
+                "label": "2013",
+                "value": 190498811460.028,
+                "unit": "USD"
+            },
+            {
+                "label": "2014",
+                "value": 133503871861.723,
+                "unit": "USD"
+            },
+            {
+                "label": "2015",
+                "value": 91030967789.0717,
+                "unit": "USD"
+            },
+            {
+                "label": "2016",
+                "value": 93355869403.9223,
+                "unit": "USD"
+            },
+            {
+                "label": "2017",
+                "value": 112090505081.739,
+                "unit": "USD"
+            },
+            {
+                "label": "2018",
+                "value": 130891088293.55,
+                "unit": "USD"
+            },
+            {
+                "label": "2019",
+                "value": 153883047509.577,
+                "unit": "USD"
+            },
+            {
+                "label": "2020",
+                "value": 156617722013.342,
+                "unit": "USD"
+            },
+            {
+                "label": "2021",
+                "value": 199765859570.935,
+                "unit": "USD"
+            },
+            {
+                "label": "2022",
+                "value": 161989520721.19,
+                "unit": "USD"
+            },
+            {
+                "label": "2023",
+                "value": 181221517868.744,
+                "unit": "USD"
+            },
+            {
+                "label": "2024",
+                "value": 190741262414.705,
+                "unit": "USD"
+            },
+            {
+                "label": "2025",
+                "value": 200261006960.666,
+                "unit": "USD"
+            },
+            {
+                "label": "2026",
+                "value": 209780751506.627,
+                "unit": "USD"
+            }
+        ],
+        "population_history": [
+            {
+                "label": "2011",
+                "value": 46307853,
+                "unit": "Count"
+            },
+            {
+                "label": "2012",
+                "value": 46210056,
+                "unit": "Count"
+            },
+            {
+                "label": "2013",
+                "value": 46126770,
+                "unit": "Count"
+            },
+            {
+                "label": "2014",
+                "value": 45972380,
+                "unit": "Count"
+            },
+            {
+                "label": "2015",
+                "value": 45784896,
+                "unit": "Count"
+            },
+            {
+                "label": "2016",
+                "value": 45616832,
+                "unit": "Count"
+            },
+            {
+                "label": "2017",
+                "value": 45436041,
+                "unit": "Count"
+            },
+            {
+                "label": "2018",
+                "value": 45208907,
+                "unit": "Count"
+            },
+            {
+                "label": "2019",
+                "value": 44957458,
+                "unit": "Count"
+            },
+            {
+                "label": "2020",
+                "value": 44680014,
+                "unit": "Count"
+            },
+            {
+                "label": "2021",
+                "value": 44298640,
+                "unit": "Count"
+            },
+            {
+                "label": "2022",
+                "value": 41048766,
+                "unit": "Count"
+            },
+            {
+                "label": "2023",
+                "value": 37732836,
+                "unit": "Count"
+            },
+            {
+                "label": "2024",
+                "value": 37860221,
+                "unit": "Count"
+            },
+            {
+                "label": "2025",
+                "value": 37987606,
+                "unit": "Count"
+            },
+            {
+                "label": "2026",
+                "value": 38114991,
+                "unit": "Count"
+            }
+        ],
+        "inflation_rate": "-6.2%",
+        "currency_trend": [
+            {
+                "label": "May 2026 Rate",
+                "value": 40.0,
+                "unit": "UAH/USD"
+            }
+        ],
+        "primary_exports": [
+            "Grain",
+            "Sunflower oil",
+            "Iron ore"
+        ],
+        "major_trading_partners": [
+            "European Union",
+            "Turkey",
+            "Poland"
+        ],
+        "economic_status": "Ukraine's economy in 2026 remains under severe strain from ongoing conflict, territorial losses, and displacement, which depress productive capacity and inflate fiscal deficits; sanctions and reduced export routes have curtailed revenue, while high inflation erodes purchasing power, collectively driving GDP growth projections downward and increasing debt burden.",
+        "debt_to_gdp": "71.5%"
+    },
+    "governance": {
+        "system_type": "Semi-presidential republic with parliamentary democracy",
+        "capital": "Kyiv",
+        "flag_url": "https://commons.wikimedia.org/wiki/Special:FilePath/Flag_of_Ukraine.svg",
+        "key_leadership": [
+            {
+                "name": "Volodymyr Zelenskyy",
+                "title": "President of Ukraine",
+                "photo_url": "https://commons.wikimedia.org/wiki/Special:FilePath/Volodymyr_Zelenskyy.jpg",
+                "influence_score": 9,
+                "bio_snippet": "Re-elected in 2024, Zelenskyy leads Ukraine through continued defense against Russian aggression, coordinates international aid, and drives reforms to strengthen NATO integration."
+            },
+            {
+                "name": "Yulia Svyrydenko",
+                "title": "Prime Minister of Ukraine",
+                "photo_url": "https://commons.wikimedia.org/wiki/Special:FilePath/Yulia_Svyrydenko.jpg",
+                "influence_score": 9,
+                "bio_snippet": "Appointed in July 2025, Svyrydenko oversees wartime economy, reconstruction projects, and EU accession negotiations while managing fiscal stability under martial law."
+            }
+        ],
+        "parliament_structure": "Verkhovna Rada of Ukraine \u2013 unicameral legislature with 450 seats",
+        "legal_system": "Constitution of 1996 (current supreme law); Martial Law Decree No. 2022/12/01 active in Donetsk, Luhansk, and Crimea; Emergency Decree No. 2025/07/15 governing wartime procurement and reconstruction funding",
+        "party_distribution": [
+            {
+                "name": "Servant of the People",
+                "seats": 254,
+                "total_seats": 450,
+                "flag_url": "https://commons.wikimedia.org/wiki/Special:FilePath/Flag_of_Servant_of_the_People.svg",
+                "notable_members": [
+                    "Volodymyr Zelenskyy",
+                    "Andriy Yermak",
+                    "Kyrylo Tymoshenko"
+                ]
+            },
+            {
+                "name": "European Solidarity",
+                "seats": 120,
+                "total_seats": 450,
+                "flag_url": "https://commons.wikimedia.org/wiki/Special:FilePath/Flag_of_European_Solidarity.svg",
+                "notable_members": [
+                    "Petro Poroshenko",
+                    "Arseniy Yatsenyuk",
+                    "Dmytro Kuleba"
+                ]
+            },
+            {
+                "name": "Opposition Platform \u2013 For Ukraine",
+                "seats": 76,
+                "total_seats": 450,
+                "flag_url": "https://commons.wikimedia.org/wiki/Special:FilePath/Flag_of_Opposition_Platform.svg",
+                "notable_members": [
+                    "Yuriy Boyko",
+                    "Viktor Medvedchuk",
+                    "Oleksiy Haran"
+                ]
+            }
+        ],
+        "active_sanctions": [
+            "EU - Asset Freeze on Russian defense firms",
+            "US - Sanctions on Russian banks and sovereign debt",
+            "UK - Travel ban and asset freeze on Russian oligarchs"
+        ]
+    },
+    "active_factions": {
+        "National Armed Forces": {
+            "name": "National Armed Forces",
+            "leader": "President of Indonesia",
+            "leader_photo_url": "https://upload.wikimedia.org/wikipedia/commons/9/90/Indonesian_Presidential_Seal_gold.svg",
+            "estimated_manpower": "404,500",
+            "weaponry_tier": "Conventional",
+            "primary_objectives": [
+                "Defend national sovereignty and territorial integrity",
+                "Counter internal security threats and insurgency"
+            ],
+            "controlled_territory": "Indonesian archipelago (Sumatra, Java, Kalimantan, Sulawesi, Papua)",
+            "allies": [],
+            "influence_score": 7
+        },
+        "Local Resistance Groups": {
+            "name": "Local Resistance Groups",
+            "leader": "Ahmad Massoud",
+            "leader_photo_url": null,
+            "estimated_manpower": "5,000\u201310,000",
+            "weaponry_tier": "Asymmetric",
+            "primary_objectives": [
+                "Retake and secure the Panjshir Valley",
+                "Disrupt Taliban supply lines across multiple Afghan provinces",
+                "Establish autonomous resistance zones and democratic governance",
+                "Secure international political and material support"
+            ],
+            "controlled_territory": "Panjshir Valley; remote valleys and scattered areas in Afghanistan (e.g., Baghlan, Kunduz, Takhar)",
+            "allies": [
+                "Northern Alliance (historical)",
+                "Tajikistan",
+                "Iran (alleged)",
+                "Pakistan (alleged)"
+            ],
+            "influence_score": 7
+        }
+    },
+    "latest_events": [
+        {
+            "title": "Russia labels Ukraine attack in occupied Luhansk \u2018monstrous crime\u2019",
+            "timestamp": "2026-06-01T17:34:33.909813",
+            "source": "SHADOW_OSINT",
+            "url": "#",
+            "context": "Processing failed on gemini-3.1-flash-lite."
+        },
+        {
+            "title": "Ukraine is turning private companies loose on Russian attack drones",
+            "timestamp": "2026-06-01T17:34:33.909813",
+            "source": "SHADOW_OSINT",
+            "url": "#",
+            "context": "Processing failed on gemini-3.1-flash-lite."
+        },
+        {
+            "title": "Ukraine drone attack hits Russian Baltic port, governor says",
+            "timestamp": "2026-06-01T17:34:33.909813",
+            "source": "SHADOW_OSINT",
+            "url": "#",
+            "context": "Processing failed on gemini-3.1-flash-lite."
+        },
+        {
+            "title": "Five people killed in Russian missile attack on Ukraine\u2019s Kharkiv region",
+            "timestamp": "2026-06-01T17:34:33.909813",
+            "source": "SHADOW_OSINT",
+            "url": "#",
+            "context": "Processing failed on gemini-3.1-flash-lite."
+        },
+        {
+            "title": "Russia-Ukraine war: Large-scale Russian attack on Ukraine leaves four dead and dozens injured",
+            "timestamp": "2026-06-01T17:34:33.909813",
+            "source": "SHADOW_OSINT",
+            "url": "#",
+            "context": "Processing failed on gemini-3.1-flash-lite."
+        },
+        {
+            "title": "Ukraine is knocking down about 9 out of every 10 Russian attack drones, and the UK is taking notes",
+            "timestamp": "2026-06-01T17:34:33.909813",
+            "source": "SHADOW_OSINT",
+            "url": "#",
+            "context": "Processing failed on gemini-3.1-flash-lite."
+        },
+        {
+            "title": "Ukraine says Russia is using a new jet-powered attack drone in response to its interceptors",
+            "timestamp": "2026-06-01T17:34:33.909813",
+            "source": "SHADOW_OSINT",
+            "url": "#",
+            "context": "Processing failed on gemini-3.1-flash-lite."
+        },
+        {
+            "title": "IAEA issues Ukraine nuclear plant warning after Russia alleges Zaporizhzhia attack",
+            "timestamp": "2026-06-01T17:34:33.909813",
+            "source": "SHADOW_OSINT",
+            "url": "#",
+            "context": "Processing failed on gemini-3.1-flash-lite."
+        },
+        {
+            "title": "At least 6 dead after Russia fires hundreds of drones at Ukraine in hours-long attack",
+            "timestamp": "2026-06-01T17:34:33.909813",
+            "source": "SHADOW_OSINT",
+            "url": "#",
+            "context": "Processing failed on gemini-3.1-flash-lite."
+        },
+        {
+            "title": "Ukraine's attack on Moscow is another sign the war is not so distant anymore for Russians",
+            "timestamp": "2026-06-01T17:34:33.909813",
+            "source": "SHADOW_OSINT",
+            "url": "#",
+            "context": "Processing failed on gemini-3.1-flash-lite."
+        },
+        {
+            "title": "Russian air attacks kill five at Ukraine\u2019s Naftogaz gas facilities",
+            "timestamp": "2026-06-01T17:34:33.909813",
+            "source": "SHADOW_OSINT",
+            "url": "#",
+            "context": "Russian forces are striking Ukrainian energy infrastructure to undermine the country's energy supply and war effort."
+        },
+        {
+            "title": "Run-down town launchpad for Putin's superweapon",
+            "timestamp": "2026-06-01T17:34:33.909813",
+            "source": "SHADOW_OSINT",
+            "url": "#",
+            "context": "The town is being used as a launch site for a Russian superweapon deployed against Ukraine."
+        }
+    ]
+}
